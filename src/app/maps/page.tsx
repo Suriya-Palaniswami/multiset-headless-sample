@@ -53,9 +53,10 @@ export default function MapsPage() {
           <p className="font-medium">Could not load maps</p>
           <p className="mt-1 text-sm opacity-90">{error}</p>
           <p className="mt-2 whitespace-pre-wrap text-xs text-amber-200/70">
-            If the message mentions the token or missing env vars, check `.env.local` and restart the dev server. A 500 from
-            Multiset with credentials set is usually an account/API issue on their side—verify your M2M client in the
-            Multiset dashboard.
+            Missing Multiset env: locally use `.env.local` and restart `npm run dev`. On Netlify, set `MULTISET_CLIENT_ID`
+            and `MULTISET_CLIENT_SECRET` with scope including Functions (all scopes is fine), ensure Production has values,
+            then redeploy—Netlify does not use `.env.local`. If credentials are set and you still see errors, check the M2M
+            client in the Multiset dashboard.
           </p>
         </div>
       ) : null}

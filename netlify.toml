@@ -1,0 +1,15 @@
+# Next.js on Netlify (OpenNext adapter). API routes and SSR run as serverless functions.
+#
+# Secrets (MULTISET_*, SUPABASE_*, EDITOR_SHARED_KEY, …) must be in the Netlify UI, not only in `.env.local`.
+# Each variable’s scope must include "Functions" (default "all scopes" is OK). If you limit scope to "Builds" only,
+# API routes will not see those values at runtime. Set a value for the Production context (or same for all contexts),
+# then trigger a new deploy after changes.
+
+[build]
+  command = "npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

@@ -1,12 +1,24 @@
 let cachedToken: string | null = null;
 let expiresOn: number | null = null;
 
+/** Bracket access avoids some bundlers stripping non-NEXT_PUBLIC env reads. */
+function multisetCredentials(): { clientId: string; clientSecret: string } | null {
+  const clientId = process.env["MULTISET_CLIENT_ID"]?.trim();
+  const clientSecret = process.env["MULTISET_CLIENT_SECRET"]?.trim();
+  if (!clientId || !clientSecret) return null;
+  return { clientId, clientSecret };
+}
+
 export async function getMultisetToken(): Promise<string> {
-  const clientId = process.env.MULTISET_CLIENT_ID?.trim();
-  const clientSecret = process.env.MULTISET_CLIENT_SECRET?.trim();
-  if (!clientId || !clientSecret) {
-    throw new Error("MULTISET_CLIENT_ID and MULTISET_CLIENT_SECRET must be set");
+  const creds = multisetCredentials();
+  if (!creds) {
+    throw new Error(
+      "MULTISET_CLIENT_ID and MULTISET_CLIENT_SECRET must be set at server runtime. " +
+        "On Netlify: Site configuration → Environment variables → each key must include scope “Functions” (use all scopes or Functions+Builds), " +
+        "with a value for the Production deploy context, then redeploy. `.env.local` is not used on Netlify."
+    );
   }
+  const { clientId, clientSecret } = creds;
 
   const now = Date.now();
   if (cachedToken && expiresOn && now < expiresOn - 120_000) {

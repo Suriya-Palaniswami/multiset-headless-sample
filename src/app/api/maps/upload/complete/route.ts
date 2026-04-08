@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { completeVpsMapUpload, type CompleteVpsMapBody } from "@/lib/server/multisetMapUpload";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as Partial<{ mapId: string } & CompleteVpsMapBody>;

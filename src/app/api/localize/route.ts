@@ -4,6 +4,8 @@ import type { LocalizeResponse } from "@/lib/types";
 
 const QUERY_FORM = "https://api.multiset.ai/v1/vps/map/query-form";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(request: Request) {
   try {
     const contentType = request.headers.get("content-type") ?? "";

@@ -5,6 +5,8 @@ import {
   getFileDownloadUrl,
 } from "@/lib/server/multisetMap";
 
+export const dynamic = "force-dynamic";
+
 type Params = { params: { mapCode: string } };
 
 export async function GET(_request: Request, context: Params) {
