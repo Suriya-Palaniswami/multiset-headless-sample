@@ -23,6 +23,8 @@ export default function ArPage() {
   const [busy, setBusy] = useState(false);
   const [showDebug, setShowDebug] = useState(true);
   const [debugLines, setDebugLines] = useState<string[]>([]);
+  const [localized, setLocalized] = useState(false);
+  const [localizeCount, setLocalizeCount] = useState(0);
 
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -52,6 +54,17 @@ export default function ArPage() {
       const placedRoot = new THREE.Group();
       placedRoot.name = "placedObjectsRoot";
       mapRoot.add(placedRoot);
+
+      // Visual helpers so successful localization is obvious in-camera.
+      const axis = new THREE.AxesHelper(0.6);
+      axis.name = "debugAxis";
+      mapRoot.add(axis);
+      const originMarker = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 16, 16),
+        new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0a6b82, emissiveIntensity: 0.7 })
+      );
+      originMarker.name = "debugOriginMarker";
+      mapRoot.add(originMarker);
 
       const loader = new GLTFLoader();
       for (const pl of placements) {
@@ -141,6 +154,7 @@ export default function ArPage() {
       sessionRef.current = null;
       refSpaceRef.current = null;
       setSessionActive(false);
+      setLocalized(false);
       setStatus("Session ended.");
       pushDebug("AR session ended.");
     });
@@ -224,6 +238,7 @@ export default function ArPage() {
 
     setStatus("Localizing…");
     setConfidence(null);
+    setLocalizeCount((n) => n + 1);
     pushDebug("Capturing camera frame...");
 
     const cap = await captureFrameForLocalization(renderer, session, refSpace);
@@ -257,10 +272,12 @@ export default function ArPage() {
     pushDebug(`Localization response: poseFound=${String(loc.poseFound)}, conf=${conf.toFixed(2)}`);
 
     if (!loc.poseFound) {
+      setLocalized(false);
       setStatus("Still localizing — no pose.");
       return;
     }
     if (conf < CONFIDENCE_MIN) {
+      setLocalized(false);
       setStatus(`Low confidence (${conf.toFixed(2)}). Move device or retry.`);
       return;
     }
@@ -278,6 +295,7 @@ export default function ArPage() {
     mapRoot.matrix.copy(T_world_map);
     mapRoot.matrixAutoUpdate = false;
     mapRoot.visible = true;
+    setLocalized(true);
 
     setStatus("Localized — content aligned.");
     pushDebug("Localization accepted. mapRoot updated.");
@@ -310,6 +328,14 @@ export default function ArPage() {
               conf {confidence.toFixed(2)}
             </span>
           ) : null}
+          <span
+            className={`rounded px-2 py-0.5 text-xs ${
+              localized ? "bg-emerald-900/70 text-emerald-200" : "bg-amber-900/70 text-amber-200"
+            }`}
+          >
+            {localized ? "Localized" : "Not localized"}
+          </span>
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">tries {localizeCount}</span>
           <button
             type="button"
             onClick={() => setShowDebug((v) => !v)}
@@ -323,22 +349,30 @@ export default function ArPage() {
             <p className="mb-2 font-medium text-zinc-100">AR session log</p>
             <div className="max-h-44 overflow-auto space-y-1">
               {debugLines.length === 0 ? <p className="text-zinc-400">No events yet.</p> : null}
-              {debugLines.map((line) => (
-                <p key={line} className="font-mono text-[11px] leading-4 text-zinc-300">
+              {debugLines.map((line, idx) => (
+                <p key={`${idx}-${line}`} className="font-mono text-[11px] leading-4 text-zinc-300">
                   {line}
                 </p>
               ))}
             </div>
           </div>
         ) : null}
-        <div className="pointer-events-auto mt-auto flex justify-center pb-24">
+        <div className="pointer-events-auto mt-auto flex justify-center gap-3 pb-24">
+          <button
+            type="button"
+            onClick={startArSession}
+            className="rounded-lg border border-zinc-500 bg-zinc-900/90 px-5 py-3 text-sm font-medium text-zinc-100 shadow-lg hover:bg-zinc-800 disabled:opacity-60"
+            disabled={busy}
+          >
+            {sessionActive ? "Restart AR" : "Start AR"}
+          </button>
           <button
             type="button"
             onClick={() => void handlePrimaryAction()}
             className="rounded-lg bg-violet-600 px-6 py-3 text-sm font-medium text-white shadow-lg hover:bg-violet-500 disabled:opacity-60"
-            disabled={busy}
+            disabled={busy || !sessionActive}
           >
-            {sessionActive ? "Localize" : "Start AR"}
+            Localize
           </button>
         </div>
       </div>
