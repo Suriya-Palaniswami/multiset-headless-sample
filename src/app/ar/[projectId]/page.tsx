@@ -46,9 +46,29 @@ export default function ArPage() {
   const localizeByTapRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
+    const saved = window.localStorage.getItem(`arAlign:${projectId}`);
+    if (saved && ALIGN_MODES.includes(saved as ArAlignMode)) {
+      setAlignMode(saved as ArAlignMode);
+      return;
+    }
     const p = new URLSearchParams(window.location.search).get("arAlign");
     setAlignMode(parseAlignMode(p));
-  }, []);
+  }, [projectId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(`arAlign:${projectId}`, alignMode);
+  }, [alignMode, projectId]);
+
+  function cycleAlignMode() {
+    setAlignMode((prev) => {
+      const idx = ALIGN_MODES.indexOf(prev);
+      const next = ALIGN_MODES[(idx + 1) % ALIGN_MODES.length];
+      pushDebug(`Pose mode switched: ${prev} -> ${next}`);
+      setLocalized(false);
+      setStatus("Pose mode changed. Re-run Localize.");
+      return next;
+    });
+  }
 
   const pushDebug = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -389,6 +409,14 @@ export default function ArPage() {
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400" title="Add ?arAlign= to URL">
             pose {alignMode}
           </span>
+          <button
+            type="button"
+            onClick={cycleAlignMode}
+            className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300"
+            title="Cycle pose conversion mode and relocalize"
+          >
+            Switch pose mode
+          </button>
           <button
             type="button"
             onClick={() => setShowDebug((v) => !v)}
