@@ -82,7 +82,7 @@ export async function readCameraTextureToBlob(
 export type CaptureResult = {
   blob: Blob;
   intrinsics: { fx: number; fy: number; px: number; py: number; width: number; height: number };
-  /** View transform in the current XR reference space (column-major) */
+  /** Viewer/head transform in the current XR reference space (column-major) */
   viewerMatrix: THREE.Matrix4;
 };
 
@@ -160,7 +160,8 @@ export async function captureFrameForLocalization(
           });
           const sx = read.width / w;
           const sy = read.height / h;
-          const viewerMatrix = new THREE.Matrix4().fromArray(view.transform.matrix);
+          // Use viewer pose (head/device) rather than per-eye view transform.
+          const viewerMatrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
           resolve({
             blob: read.blob,
             intrinsics: {

@@ -12,6 +12,13 @@ import { captureFrameForLocalization } from "@/lib/ar/xrCapture";
 
 const CONFIDENCE_MIN = 0.7;
 
+function multisetLhsPoseToThreeRhsMatrix(position: THREE.Vector3, rotation: THREE.Quaternion): THREE.Matrix4 {
+  const lhs = new THREE.Matrix4().compose(position, rotation, new THREE.Vector3(1, 1, 1));
+  // Reflection matrix to convert LHS<->RHS by flipping Z.
+  const s = new THREE.Matrix4().makeScale(1, 1, -1);
+  return new THREE.Matrix4().multiplyMatrices(s, lhs).multiply(s);
+}
+
 export default function ArPage() {
   const params = useParams();
   const projectId = String(params.projectId ?? "");
@@ -277,16 +284,16 @@ export default function ArPage() {
         return;
       }
 
-    const fd = new FormData();
-    fd.append("mapCode", mapCode);
-    fd.append("fx", String(cap.intrinsics.fx));
-    fd.append("fy", String(cap.intrinsics.fy));
-    fd.append("px", String(cap.intrinsics.px));
-    fd.append("py", String(cap.intrinsics.py));
-    fd.append("width", String(cap.intrinsics.width));
-    fd.append("height", String(cap.intrinsics.height));
-    fd.append("isRightHanded", "false");
-    fd.append("queryImage", cap.blob, "frame.jpg");
+      const fd = new FormData();
+      fd.append("mapCode", mapCode);
+      fd.append("fx", String(cap.intrinsics.fx));
+      fd.append("fy", String(cap.intrinsics.fy));
+      fd.append("px", String(cap.intrinsics.px));
+      fd.append("py", String(cap.intrinsics.py));
+      fd.append("width", String(cap.intrinsics.width));
+      fd.append("height", String(cap.intrinsics.height));
+      fd.append("isRightHanded", "false");
+      fd.append("queryImage", cap.blob, "frame.jpg");
 
       const res = await apiFetch("/api/localize", { method: "POST", body: fd });
       if (!res.ok) {
@@ -311,19 +318,16 @@ export default function ArPage() {
         return;
       }
 
-    const T_world_camera = cap.viewerMatrix;
-    const T_map_camera = new THREE.Matrix4().compose(
-      new THREE.Vector3(loc.position!.x, loc.position!.y, loc.position!.z),
-      new THREE.Quaternion(loc.rotation!.x, loc.rotation!.y, loc.rotation!.z, loc.rotation!.w),
-      new THREE.Vector3(1, 1, 1)
-    );
-    const T_world_map = new THREE.Matrix4().multiplyMatrices(
-      T_world_camera,
-      T_map_camera.clone().invert()
-    );
-    mapRoot.matrix.copy(T_world_map);
-    mapRoot.matrixAutoUpdate = false;
-    mapRoot.visible = true;
+      const T_world_camera = cap.viewerMatrix;
+      const T_map_camera_rhs = multisetLhsPoseToThreeRhsMatrix(
+        new THREE.Vector3(loc.position!.x, loc.position!.y, loc.position!.z),
+        new THREE.Quaternion(loc.rotation!.x, loc.rotation!.y, loc.rotation!.z, loc.rotation!.w)
+      );
+      // Multiset returns camera pose in map space. Solve map pose in world.
+      const T_world_map = new THREE.Matrix4().multiplyMatrices(T_world_camera, T_map_camera_rhs.clone().invert());
+      mapRoot.matrix.copy(T_world_map);
+      mapRoot.matrixAutoUpdate = false;
+      mapRoot.visible = true;
       setLocalized(true);
       setStatus("Localized — content aligned.");
       pushDebug("Localization accepted. mapRoot updated.");
@@ -344,16 +348,11 @@ export default function ArPage() {
 
   async function handlePrimaryAction() {
     if (busy) return;
-    setBusy(true);
-    try {
-      if (!sessionActive) {
-        startArSession();
-      } else {
-        await localize();
-      }
-    } finally {
-      setBusy(false);
+    if (!sessionActive) {
+      startArSession();
+      return;
     }
+    await localize();
   }
 
   return (
