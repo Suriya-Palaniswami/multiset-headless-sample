@@ -17,18 +17,28 @@ async function imageDataToJpegBlob(
   rgba: ArrayBufferLike,
   width: number,
   height: number,
+  outWidth = width,
+  outHeight = height,
   quality = 0.7
 ): Promise<Blob> {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return new Blob();
+  const src = document.createElement("canvas");
+  src.width = width;
+  src.height = height;
+  const srcCtx = src.getContext("2d");
+  if (!srcCtx) return new Blob();
   const data = new Uint8ClampedArray(rgba as ArrayBuffer);
   const img = new ImageData(data, width, height);
-  ctx.putImageData(img, 0, 0);
+  srcCtx.putImageData(img, 0, 0);
+
+  const out = document.createElement("canvas");
+  out.width = outWidth;
+  out.height = outHeight;
+  const outCtx = out.getContext("2d");
+  if (!outCtx) return new Blob();
+  outCtx.drawImage(src, 0, 0, outWidth, outHeight);
+
   return new Promise((resolve) => {
-    canvas.toBlob((b) => resolve(b ?? new Blob()), "image/jpeg", quality);
+    out.toBlob((b) => resolve(b ?? new Blob()), "image/jpeg", quality);
   });
 }
 
@@ -37,7 +47,8 @@ export async function readCameraTextureToBlob(
   gl: WebGL2RenderingContext,
   texture: WebGLTexture,
   width: number,
-  height: number
+  height: number,
+  maxDimension = 1280
 ): Promise<{ blob: Blob; width: number; height: number } | null> {
   const fb = gl.createFramebuffer();
   if (!fb) return null;
@@ -55,9 +66,12 @@ export async function readCameraTextureToBlob(
       const dst = (height - row - 1) * width * 4;
       flipped.set(raw.subarray(src, src + width * 4), dst);
     }
-    const blob = await imageDataToJpegBlob(flipped.buffer, width, height, 0.7);
+    const scale = Math.min(1, maxDimension / Math.max(width, height));
+    const outW = Math.max(1, Math.round(width * scale));
+    const outH = Math.max(1, Math.round(height * scale));
+    const blob = await imageDataToJpegBlob(flipped.buffer, width, height, outW, outH, 0.7);
     if (!blob.size) return null;
-    return { blob, width, height };
+    return { blob, width: outW, height: outH };
   } catch {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     if (fb) gl.deleteFramebuffer(fb);
@@ -82,7 +96,8 @@ const MAX_IMAGE_ATTEMPTS = 10;
 export async function captureFrameForLocalization(
   renderer: THREE.WebGLRenderer,
   session: XRSession,
-  refSpace: XRReferenceSpace
+  refSpace: XRReferenceSpace,
+  maxQueryDimension = 1280
 ): Promise<CaptureResult | null> {
   const gl = renderer.getContext() as WebGL2RenderingContext;
   const xrBinding = new XRWebGLBinding(session, gl);
@@ -128,7 +143,7 @@ export async function captureFrameForLocalization(
           frame();
           return;
         }
-        void readCameraTextureToBlob(gl, img, w, h).then((read) => {
+        void readCameraTextureToBlob(gl, img, w, h, maxQueryDimension).then((read) => {
           const baseLayer = session.renderState.baseLayer;
           if (baseLayer?.framebuffer) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
@@ -143,10 +158,19 @@ export async function captureFrameForLocalization(
             x: 0,
             y: 0,
           });
+          const sx = read.width / w;
+          const sy = read.height / h;
           const viewerMatrix = new THREE.Matrix4().fromArray(view.transform.matrix);
           resolve({
             blob: read.blob,
-            intrinsics,
+            intrinsics: {
+              fx: intrinsics.fx * sx,
+              fy: intrinsics.fy * sy,
+              px: intrinsics.px * sx,
+              py: intrinsics.py * sy,
+              width: read.width,
+              height: read.height,
+            },
             viewerMatrix,
           });
         });
