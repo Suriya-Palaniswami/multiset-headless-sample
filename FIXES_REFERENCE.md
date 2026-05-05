@@ -114,6 +114,33 @@ This document summarizes the fixes applied during debugging of map loading and W
 
 ---
 
+## 7) Editor placements do not line up in WebXR (wrong world alignment)
+
+### Symptom
+- Localization confidence is good (e.g. 0.85) but placed assets appear offset/rotated versus the real scene (or versus the editor).
+
+### Root cause
+- Multiset query with `isRightHanded: false` returns pose data in **LHS / Unity-style** coordinates, while Three.js + the editor use **RHS**.
+- A single Z-axis matrix “reflection sandwich” is not always equivalent to the usual **Unity→Three** translation/quaternion swap; the wrong conversion shifts content even when localization is confident.
+
+### Fix
+- Default alignment uses common Unity→Three rules:
+  - position: `(x, y, -z)`
+  - quaternion: `(-qx, qy, -qz, qw)`
+- World solve stays: `T_world_map = T_world_camera * inverse(T_map_camera)` (same algebraic identity as before; the change is how `T_map_camera` is built from the API).
+- AR session uses **`local-floor`** reference space when available (falls back to `local`).
+- Debug override: add query `?arAlign=<mode>` on the AR URL:
+  - `unity` — default (Unity-style LHS→RHS; recommended first)
+  - `direct` — no conversion (raw API numbers as Three compose)
+  - `lhsReflection` — previous Z-reflection sandwich on the raw matrix
+  - `invMapCam` — build `T_map_camera` then **invert** before the world solve (try if API convention is opposite)
+
+### Files
+- `src/lib/ar/mapPose.ts`
+- `src/app/ar/[projectId]/page.tsx`
+
+---
+
 ## Verification checklist
 
 1. Open editor/map for a known active map.

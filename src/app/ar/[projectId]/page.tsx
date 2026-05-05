@@ -9,18 +9,20 @@ import { ARButton } from "three/examples/jsm/webxr/ARButton.js";
 import { apiFetch } from "@/lib/api";
 import type { AssetRow, LocalizeResponse, PlacementRow, ProjectRow } from "@/lib/types";
 import { captureFrameForLocalization } from "@/lib/ar/xrCapture";
+import { type ArAlignMode, buildMapCameraMatrix } from "@/lib/ar/mapPose";
 
 const CONFIDENCE_MIN = 0.7;
 
-function multisetLhsPoseToThreeRhsMatrix(position: THREE.Vector3, rotation: THREE.Quaternion): THREE.Matrix4 {
-  const lhs = new THREE.Matrix4().compose(position, rotation, new THREE.Vector3(1, 1, 1));
-  // Reflection matrix to convert LHS<->RHS by flipping Z.
-  const s = new THREE.Matrix4().makeScale(1, 1, -1);
-  return new THREE.Matrix4().multiplyMatrices(s, lhs).multiply(s);
+const ALIGN_MODES: ArAlignMode[] = ["unity", "direct", "lhsReflection", "invMapCam"];
+
+function parseAlignMode(raw: string | null): ArAlignMode {
+  if (raw && ALIGN_MODES.includes(raw as ArAlignMode)) return raw as ArAlignMode;
+  return "unity";
 }
 
 export default function ArPage() {
   const params = useParams();
+  const [alignMode, setAlignMode] = useState<ArAlignMode>("unity");
   const projectId = String(params.projectId ?? "");
   const pageRootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -42,6 +44,11 @@ export default function ArPage() {
   const assetCache = useRef<Map<string, THREE.Object3D>>(new Map());
   const arButtonRef = useRef<HTMLButtonElement | null>(null);
   const localizeByTapRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search).get("arAlign");
+    setAlignMode(parseAlignMode(p));
+  }, []);
 
   const pushDebug = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -155,7 +162,13 @@ export default function ArPage() {
       sessionRef.current = session;
       setSessionActive(true);
       if (session) {
-        refSpaceRef.current = await session.requestReferenceSpace("local");
+        try {
+          refSpaceRef.current = await session.requestReferenceSpace("local-floor");
+          pushDebug("XR reference space: local-floor");
+        } catch {
+          refSpaceRef.current = await session.requestReferenceSpace("local");
+          pushDebug("XR reference space: local (local-floor unavailable)");
+        }
         const onSelect = () => {
           pushDebug("XR select event: tap detected, attempting localization.");
           localizeByTapRef.current?.();
@@ -275,7 +288,7 @@ export default function ArPage() {
       setStatus("Localizing…");
       setConfidence(null);
       setLocalizeCount((n) => n + 1);
-      pushDebug("Capturing camera frame...");
+      pushDebug(`Capturing camera frame... (arAlign=${alignMode})`);
 
       const cap = await captureFrameForLocalization(renderer, session, refSpace);
       if (!cap) {
@@ -319,12 +332,9 @@ export default function ArPage() {
       }
 
       const T_world_camera = cap.viewerMatrix;
-      const T_map_camera_rhs = multisetLhsPoseToThreeRhsMatrix(
-        new THREE.Vector3(loc.position!.x, loc.position!.y, loc.position!.z),
-        new THREE.Quaternion(loc.rotation!.x, loc.rotation!.y, loc.rotation!.z, loc.rotation!.w)
-      );
-      // Multiset returns camera pose in map space. Solve map pose in world.
-      const T_world_map = new THREE.Matrix4().multiplyMatrices(T_world_camera, T_map_camera_rhs.clone().invert());
+      const T_map_camera = buildMapCameraMatrix(loc, alignMode);
+      // T_world_map * T_map_camera = T_world_camera  =>  T_world_map = T_world_camera * inv(T_map_camera)
+      const T_world_map = new THREE.Matrix4().multiplyMatrices(T_world_camera, T_map_camera.clone().invert());
       mapRoot.matrix.copy(T_world_map);
       mapRoot.matrixAutoUpdate = false;
       mapRoot.visible = true;
@@ -338,7 +348,7 @@ export default function ArPage() {
     } finally {
       setBusy(false);
     }
-  }, [busy, mapCode, pushDebug]);
+  }, [alignMode, busy, mapCode, pushDebug]);
 
   useEffect(() => {
     localizeByTapRef.current = () => {
@@ -376,6 +386,9 @@ export default function ArPage() {
             {localized ? "Localized" : "Not localized"}
           </span>
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">tries {localizeCount}</span>
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400" title="Add ?arAlign= to URL">
+            pose {alignMode}
+          </span>
           <button
             type="button"
             onClick={() => setShowDebug((v) => !v)}
