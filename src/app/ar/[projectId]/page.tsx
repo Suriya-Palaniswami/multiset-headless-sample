@@ -360,19 +360,11 @@ export default function ArPage() {
         <div className="pointer-events-auto mt-auto flex justify-center gap-3 pb-24">
           <button
             type="button"
-            onClick={startArSession}
-            className="rounded-lg border border-zinc-500 bg-zinc-900/90 px-5 py-3 text-sm font-medium text-zinc-100 shadow-lg hover:bg-zinc-800 disabled:opacity-60"
-            disabled={busy}
-          >
-            {sessionActive ? "Restart AR" : "Start AR"}
-          </button>
-          <button
-            type="button"
             onClick={() => void handlePrimaryAction()}
             className="rounded-lg bg-violet-600 px-6 py-3 text-sm font-medium text-white shadow-lg hover:bg-violet-500 disabled:opacity-60"
-            disabled={busy || !sessionActive}
+            disabled={busy}
           >
-            Localize
+            {sessionActive ? "Localize" : "Start AR"}
           </button>
         </div>
       </div>
