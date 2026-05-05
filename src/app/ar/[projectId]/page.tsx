@@ -128,7 +128,7 @@ export default function ArPage() {
 
     const arBtn = ARButton.createButton(renderer, {
       requiredFeatures: ["hit-test"],
-      optionalFeatures: ["local-floor", "dom-overlay"],
+      optionalFeatures: ["local-floor", "dom-overlay", "camera-access"],
       domOverlay: { root: container },
     });
     arBtn.style.position = "fixed";
@@ -241,9 +241,23 @@ export default function ArPage() {
     const session = sessionRef.current ?? renderer?.xr.getSession() ?? null;
     const refSpace = refSpaceRef.current;
     const mapRoot = mapRootRef.current;
-    if (busy || !renderer || !session || !refSpace || !mapRoot) {
+    if (busy) {
+      pushDebug("Localize ignored: previous localization still running.");
+      return;
+    }
+    if (!renderer || !session) {
       setStatus("Start an AR session first.");
-      pushDebug("Localize blocked: no active XR session.");
+      pushDebug("Localize blocked: XR session is not active.");
+      return;
+    }
+    if (!refSpace) {
+      setStatus("AR session not fully ready. Try again in a second.");
+      pushDebug("Localize blocked: XR reference space missing.");
+      return;
+    }
+    if (!mapRoot) {
+      setStatus("AR scene not ready yet.");
+      pushDebug("Localize blocked: mapRoot missing.");
       return;
     }
 
@@ -256,8 +270,8 @@ export default function ArPage() {
 
       const cap = await captureFrameForLocalization(renderer, session, refSpace);
       if (!cap) {
-        setStatus("Could not capture camera frame (camera-access / WebGL).");
-        pushDebug("Frame capture failed.");
+        setStatus("Could not capture camera frame. Ensure browser/device supports WebXR camera-access.");
+        pushDebug("Frame capture failed. Likely missing camera-access support, camera image texture, or WebGL readback.");
         return;
       }
 
