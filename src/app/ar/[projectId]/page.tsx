@@ -15,6 +15,7 @@ const CONFIDENCE_MIN = 0.7;
 export default function ArPage() {
   const params = useParams();
   const projectId = String(params.projectId ?? "");
+  const pageRootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<string>("Initializing…");
   const [confidence, setConfidence] = useState<number | null>(null);
@@ -126,10 +127,11 @@ export default function ArPage() {
     onResize();
     window.addEventListener("resize", onResize);
 
+    const overlayRoot = pageRootRef.current ?? document.body;
     const arBtn = ARButton.createButton(renderer, {
       requiredFeatures: ["hit-test"],
       optionalFeatures: ["local-floor", "dom-overlay", "camera-access"],
-      domOverlay: { root: container },
+      domOverlay: { root: overlayRoot },
     });
     arBtn.style.position = "fixed";
     arBtn.style.bottom = "24px";
@@ -355,7 +357,7 @@ export default function ArPage() {
   }
 
   return (
-    <div className="relative flex min-h-screen flex-col bg-zinc-950">
+    <div ref={pageRootRef} className="relative flex min-h-screen flex-col bg-zinc-950">
       <div className="pointer-events-none absolute inset-0 z-10 flex flex-col p-4">
         <div className="pointer-events-auto flex flex-wrap items-center gap-3">
           <Link href={`/editor/${projectId}`} className="text-sm text-violet-400 hover:underline">
