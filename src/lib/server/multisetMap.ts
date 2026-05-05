@@ -1,17 +1,33 @@
-import { getMultisetToken } from "./multisetToken";
+import { clearMultisetTokenCache, getMultisetToken } from "./multisetToken";
 
 const MAPS_BASE = "https://api.multiset.ai/v1/vps/map";
 const FILE_BASE = "https://api.multiset.ai/v1/file";
 
 export async function multisetFetch(path: string, init?: RequestInit): Promise<Response> {
-  const token = await getMultisetToken();
-  return fetch(path, {
+  let token = await getMultisetToken();
+  let res = await fetch(path, {
     ...init,
+    // /v1/file returns short-lived presigned URLs; never cache upstream responses.
+    cache: "no-store",
     headers: {
       Authorization: `Bearer ${token}`,
       ...(init?.headers as Record<string, string>),
     },
   });
+  if (res.status !== 401) return res;
+
+  // One retry with a forced token refresh handles stale cached tokens.
+  clearMultisetTokenCache();
+  token = await getMultisetToken(true);
+  res = await fetch(path, {
+    ...init,
+    cache: "no-store",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(init?.headers as Record<string, string>),
+    },
+  });
+  return res;
 }
 
 export async function listMaps(): Promise<unknown> {
@@ -35,6 +51,21 @@ export async function getMapDetails(mapCode: string): Promise<unknown> {
   return res.json();
 }
 
+function extractObjectKeyFromMaybeUrl(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  try {
+    const u = new URL(trimmed);
+    // Mesh links can be full presigned URLs. The stable object key is the URL path.
+    return decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+  } catch {
+    return trimmed;
+  }
+}
+
 /** Extract mesh file key from Multiset map details (textured preferred). */
 export function extractMeshKey(details: Record<string, unknown>): string | null {
   const mesh = details.mapMesh as
@@ -45,7 +76,9 @@ export function extractMeshKey(details: Record<string, unknown>): string | null 
     | undefined;
   const textured = mesh?.texturedMesh?.meshLink;
   const raw = mesh?.rawMesh?.meshLink;
-  return textured || raw || null;
+  const candidate = textured || raw || null;
+  if (!candidate) return null;
+  return extractObjectKeyFromMaybeUrl(candidate);
 }
 
 export async function getFileDownloadUrl(key: string): Promise<string> {

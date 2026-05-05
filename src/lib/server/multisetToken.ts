@@ -1,6 +1,11 @@
 let cachedToken: string | null = null;
 let expiresOn: number | null = null;
 
+export function clearMultisetTokenCache(): void {
+  cachedToken = null;
+  expiresOn = null;
+}
+
 /** Bracket access avoids some bundlers stripping non-NEXT_PUBLIC env reads. */
 function multisetCredentials(): { clientId: string; clientSecret: string } | null {
   const clientId = process.env["MULTISET_CLIENT_ID"]?.trim();
@@ -9,7 +14,7 @@ function multisetCredentials(): { clientId: string; clientSecret: string } | nul
   return { clientId, clientSecret };
 }
 
-export async function getMultisetToken(): Promise<string> {
+export async function getMultisetToken(forceRefresh = false): Promise<string> {
   const creds = multisetCredentials();
   if (!creds) {
     throw new Error(
@@ -21,7 +26,7 @@ export async function getMultisetToken(): Promise<string> {
   const { clientId, clientSecret } = creds;
 
   const now = Date.now();
-  if (cachedToken && expiresOn && now < expiresOn - 120_000) {
+  if (!forceRefresh && cachedToken && expiresOn && now < expiresOn - 120_000) {
     return cachedToken;
   }
 
