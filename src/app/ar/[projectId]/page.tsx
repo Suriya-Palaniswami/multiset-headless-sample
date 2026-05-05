@@ -101,13 +101,15 @@ export default function ArPage() {
     window.addEventListener("resize", onResize);
 
     const arBtn = ARButton.createButton(renderer, {
-      requiredFeatures: ["camera-access"],
+      requiredFeatures: ["hit-test"],
+      optionalFeatures: ["local-floor", "dom-overlay"],
+      domOverlay: { root: container },
     });
     arBtn.style.position = "fixed";
     arBtn.style.bottom = "24px";
     arBtn.style.left = "50%";
     arBtn.style.transform = "translateX(-50%)";
-    arBtn.style.zIndex = "20";
+    arBtn.style.zIndex = "40";
     document.body.appendChild(arBtn);
 
     renderer.xr.addEventListener("sessionstart", async () => {
@@ -123,6 +125,23 @@ export default function ArPage() {
       refSpaceRef.current = null;
       setStatus("Session ended.");
     });
+
+    (async () => {
+      if (!("xr" in navigator)) {
+        setStatus("WebXR unavailable on this device/browser.");
+        return;
+      }
+      try {
+        const supported = await (navigator as Navigator & {
+          xr?: { isSessionSupported: (mode: XRSessionMode) => Promise<boolean> };
+        }).xr?.isSessionSupported("immersive-ar");
+        if (!supported) {
+          setStatus("Immersive AR not supported. Use Chrome on an AR-capable mobile device over HTTPS.");
+        }
+      } catch {
+        setStatus("Could not verify AR support in this browser.");
+      }
+    })();
 
     (async () => {
       try {
