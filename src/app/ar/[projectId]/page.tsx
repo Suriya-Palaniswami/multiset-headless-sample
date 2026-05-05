@@ -33,6 +33,7 @@ export default function ArPage() {
   const refSpaceRef = useRef<XRReferenceSpace | null>(null);
   const assetCache = useRef<Map<string, THREE.Object3D>>(new Map());
   const arButtonRef = useRef<HTMLButtonElement | null>(null);
+  const localizeByTapRef = useRef<(() => void) | null>(null);
 
   const pushDebug = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -146,11 +147,21 @@ export default function ArPage() {
       setSessionActive(true);
       if (session) {
         refSpaceRef.current = await session.requestReferenceSpace("local");
+        const onSelect = () => {
+          pushDebug("XR select event: tap detected, attempting localization.");
+          localizeByTapRef.current?.();
+        };
+        session.addEventListener("select", onSelect);
+        (session as XRSession & { __onSelectLocalize?: () => void }).__onSelectLocalize = onSelect;
       }
-      setStatus("Session active — tap Localize.");
-      pushDebug("AR session started.");
+      setStatus("Session active — tap Localize button (or tap screen if controls are hidden).");
+      pushDebug("AR session started. If controls disappear, tap screen to localize.");
     });
     renderer.xr.addEventListener("sessionend", () => {
+      const s = sessionRef.current as (XRSession & { __onSelectLocalize?: () => void }) | null;
+      if (s?.__onSelectLocalize) {
+        s.removeEventListener("select", s.__onSelectLocalize);
+      }
       sessionRef.current = null;
       refSpaceRef.current = null;
       setSessionActive(false);
@@ -225,28 +236,30 @@ export default function ArPage() {
     launcher.click();
   }
 
-  async function localize() {
+  const localize = useCallback(async () => {
     const renderer = rendererRef.current;
     const session = sessionRef.current ?? renderer?.xr.getSession() ?? null;
     const refSpace = refSpaceRef.current;
     const mapRoot = mapRootRef.current;
-    if (!renderer || !session || !refSpace || !mapRoot) {
+    if (busy || !renderer || !session || !refSpace || !mapRoot) {
       setStatus("Start an AR session first.");
       pushDebug("Localize blocked: no active XR session.");
       return;
     }
 
-    setStatus("Localizing…");
-    setConfidence(null);
-    setLocalizeCount((n) => n + 1);
-    pushDebug("Capturing camera frame...");
+    setBusy(true);
+    try {
+      setStatus("Localizing…");
+      setConfidence(null);
+      setLocalizeCount((n) => n + 1);
+      pushDebug("Capturing camera frame...");
 
-    const cap = await captureFrameForLocalization(renderer, session, refSpace);
-    if (!cap) {
-      setStatus("Could not capture camera frame (camera-access / WebGL).");
-      pushDebug("Frame capture failed.");
-      return;
-    }
+      const cap = await captureFrameForLocalization(renderer, session, refSpace);
+      if (!cap) {
+        setStatus("Could not capture camera frame (camera-access / WebGL).");
+        pushDebug("Frame capture failed.");
+        return;
+      }
 
     const fd = new FormData();
     fd.append("mapCode", mapCode);
@@ -259,28 +272,28 @@ export default function ArPage() {
     fd.append("isRightHanded", "false");
     fd.append("queryImage", cap.blob, "frame.jpg");
 
-    const res = await apiFetch("/api/localize", { method: "POST", body: fd });
-    if (!res.ok) {
-      const body = await res.text();
-      setStatus(body);
-      pushDebug(`Localization API failed: ${body}`);
-      return;
-    }
-    const loc = (await res.json()) as LocalizeResponse;
-    const conf = loc.confidence ?? 0;
-    setConfidence(conf);
-    pushDebug(`Localization response: poseFound=${String(loc.poseFound)}, conf=${conf.toFixed(2)}`);
+      const res = await apiFetch("/api/localize", { method: "POST", body: fd });
+      if (!res.ok) {
+        const body = await res.text();
+        setStatus(body);
+        pushDebug(`Localization API failed: ${body}`);
+        return;
+      }
+      const loc = (await res.json()) as LocalizeResponse;
+      const conf = loc.confidence ?? 0;
+      setConfidence(conf);
+      pushDebug(`Localization response: poseFound=${String(loc.poseFound)}, conf=${conf.toFixed(2)}`);
 
-    if (!loc.poseFound) {
-      setLocalized(false);
-      setStatus("Still localizing — no pose.");
-      return;
-    }
-    if (conf < CONFIDENCE_MIN) {
-      setLocalized(false);
-      setStatus(`Low confidence (${conf.toFixed(2)}). Move device or retry.`);
-      return;
-    }
+      if (!loc.poseFound) {
+        setLocalized(false);
+        setStatus("Still localizing — no pose.");
+        return;
+      }
+      if (conf < CONFIDENCE_MIN) {
+        setLocalized(false);
+        setStatus(`Low confidence (${conf.toFixed(2)}). Move device or retry.`);
+        return;
+      }
 
     const T_world_camera = cap.viewerMatrix;
     const T_map_camera = new THREE.Matrix4().compose(
@@ -295,11 +308,23 @@ export default function ArPage() {
     mapRoot.matrix.copy(T_world_map);
     mapRoot.matrixAutoUpdate = false;
     mapRoot.visible = true;
-    setLocalized(true);
+      setLocalized(true);
+      setStatus("Localized — content aligned.");
+      pushDebug("Localization accepted. mapRoot updated.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Localization failed.";
+      setStatus(msg);
+      pushDebug(`Localization exception: ${msg}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, mapCode, pushDebug]);
 
-    setStatus("Localized — content aligned.");
-    pushDebug("Localization accepted. mapRoot updated.");
-  }
+  useEffect(() => {
+    localizeByTapRef.current = () => {
+      void localize();
+    };
+  }, [localize]);
 
   async function handlePrimaryAction() {
     if (busy) return;
@@ -364,7 +389,7 @@ export default function ArPage() {
             className="rounded-lg bg-violet-600 px-6 py-3 text-sm font-medium text-white shadow-lg hover:bg-violet-500 disabled:opacity-60"
             disabled={busy}
           >
-            {sessionActive ? "Localize" : "Start AR"}
+            {sessionActive ? (localized ? "Relocalize" : "Localize") : "Start AR"}
           </button>
         </div>
       </div>
