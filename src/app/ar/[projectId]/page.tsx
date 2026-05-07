@@ -28,10 +28,25 @@ function getPublicMultisetCreds(): { clientId: string; clientSecret: string } | 
   return { clientId, clientSecret };
 }
 
+/**
+ * Loading the full map mesh + Multiset shader on mobile often triggers GPU process OOM ("Aw, Snap").
+ * Default: placements-only (showMesh false). SDK still applies transform when showGizmo is true.
+ * Set NEXT_PUBLIC_AR_SHOW_MESH=true only on capable desktop / for debugging alignment.
+ */
+function sdkMeshVisibility(): { showMesh: boolean; showGizmo: boolean } {
+  const showMesh = process.env.NEXT_PUBLIC_AR_SHOW_MESH === "true";
+  return {
+    showMesh,
+    /** Required for applyMeshTransform when showMesh is false (see SDK localizeFrame). */
+    showGizmo: !showMesh,
+  };
+}
+
 export default function ArPage() {
   const params = useParams();
   const projectId = String(params.projectId ?? "");
-  const pageRootRef = useRef<HTMLDivElement>(null);
+  /** Prefer this as dom-overlay root (canvas + controls) to avoid compositing the whole document in XR. */
+  const immersiveUiRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [status, setStatus] = useState<string>("Initializing…");
@@ -84,7 +99,7 @@ export default function ArPage() {
   );
 
   useEffect(() => {
-    if (!projectId || !containerRef.current || !pageRootRef.current) return;
+    if (!projectId || !containerRef.current || !immersiveUiRef.current) return;
 
     const creds = getPublicMultisetCreds();
     if (!creds) {
@@ -124,6 +139,8 @@ export default function ArPage() {
 
         if (cancelled) return;
 
+        const { showMesh, showGizmo } = sdkMeshVisibility();
+
         const client = new MultisetClient({
           clientId: creds.clientId,
           clientSecret: creds.clientSecret,
@@ -133,9 +150,8 @@ export default function ArPage() {
           isRightHanded: true,
           confidenceCheck: true,
           confidenceThreshold: 0.7,
-          /** Same mesh/transform path Multiset uses in samples; aligns VPS frame with rendered root. */
-          showMesh: true,
-          showGizmo: false,
+          showMesh,
+          showGizmo,
           autoLocalize: false,
           relocalization: false,
           onLocalizationInit: () => {
@@ -166,7 +182,7 @@ export default function ArPage() {
         const controller = new WebxrController({
           client,
           canvas,
-          overlayRoot: pageRootRef.current ?? document.body,
+          overlayRoot: immersiveUiRef.current ?? document.body,
           onSessionStart: () => {
             setSessionActive(true);
             pushDebug("SDK: AR session started.");
@@ -181,8 +197,16 @@ export default function ArPage() {
         });
         controllerRef.current = controller;
 
-        await controller.initialize(pageRootRef.current ?? undefined);
+        await controller.initialize(immersiveUiRef.current ?? undefined);
         pushDebug("SDK: WebxrController initialized.");
+        try {
+          const r = controller.getRenderer();
+          const pr = Math.min(1.5, window.devicePixelRatio || 1);
+          r.setPixelRatio(pr);
+          pushDebug(`SDK: renderer pixelRatio capped to ${pr}. mesh=${showMesh} gizmo=${showGizmo}`);
+        } catch {
+          pushDebug("SDK: could not adjust pixel ratio.");
+        }
 
         const meshGroup = getSdkMeshGroup(controller);
         if (meshGroup && !placementsLoadedRef.current) {
@@ -235,8 +259,9 @@ export default function ArPage() {
   }
 
   return (
-    <div ref={pageRootRef} className="relative flex min-h-screen flex-col bg-zinc-950">
-      <div className="pointer-events-none absolute inset-0 z-10 flex flex-col p-4">
+    <div className="relative min-h-screen bg-zinc-950">
+      <div ref={immersiveUiRef} className="relative flex min-h-screen flex-col">
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col p-4">
         <div className="pointer-events-auto flex flex-wrap items-center gap-3">
           <Link href={`/editor/${projectId}`} className="text-sm text-violet-400 hover:underline">
             ← Editor
@@ -284,8 +309,9 @@ export default function ArPage() {
             {busy ? "Localizing…" : "Localize"}
           </button>
         </div>
+        </div>
+        <div ref={containerRef} className="h-[70vh] w-full flex-1 lg:h-screen" />
       </div>
-      <div ref={containerRef} className="h-[70vh] w-full flex-1 lg:h-screen" />
     </div>
   );
 }
