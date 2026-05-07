@@ -42,16 +42,42 @@ function sdkMeshVisibility(): { showMesh: boolean; showGizmo: boolean } {
   };
 }
 
+/**
+ * The VPS SDK ties GL buffer cost to window size × pixelRatio. Mobile often hits GPU OOM ("Aw, Snap").
+ * Optional: NEXT_PUBLIC_AR_PIXEL_RATIO=0.75 or 1
+ */
+function arPixelRatioCap(): number {
+  const raw = process.env.NEXT_PUBLIC_AR_PIXEL_RATIO?.trim();
+  if (raw !== undefined && raw !== "" && !Number.isNaN(Number(raw))) {
+    return Math.max(0.5, Math.min(3, Number(raw)));
+  }
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  const coarse = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+  const mobileish = coarse || (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0);
+  const cap = mobileish ? 1 : 1.25;
+  return Math.min(cap, dpr);
+}
+
+function applyRendererPixelRatio(controller: WebxrController, label: string, pushDebug: (s: string) => void) {
+  try {
+    const pr = arPixelRatioCap();
+    controller.getRenderer().setPixelRatio(pr);
+    pushDebug(`SDK: ${label} pixelRatio=${pr}`);
+  } catch {
+    pushDebug(`SDK: ${label} pixelRatio tweak failed`);
+  }
+}
+
 export default function ArPage() {
   const params = useParams();
   const projectId = String(params.projectId ?? "");
-  /** Prefer this as dom-overlay root (canvas + controls) to avoid compositing the whole document in XR. */
-  const immersiveUiRef = useRef<HTMLDivElement>(null);
+  /** WebXR dom-overlay root — keep subtree small for mobile compositor/GPU. */
+  const xrDomOverlayRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [status, setStatus] = useState<string>("Initializing…");
   const [confidence, setConfidence] = useState<number | null>(null);
-  const [showDebug, setShowDebug] = useState(true);
+  const [showDebug, setShowDebug] = useState(false);
   const [debugLines, setDebugLines] = useState<string[]>([]);
   const [sessionActive, setSessionActive] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -99,7 +125,7 @@ export default function ArPage() {
   );
 
   useEffect(() => {
-    if (!projectId || !containerRef.current || !immersiveUiRef.current) return;
+    if (!projectId || !containerRef.current || !xrDomOverlayRef.current) return;
 
     const creds = getPublicMultisetCreds();
     if (!creds) {
@@ -135,7 +161,10 @@ export default function ArPage() {
         const assetsRes = await apiFetch("/api/assets");
         if (!assetsRes.ok) throw new Error(await assetsRes.text());
         const assetRows = (await assetsRes.json()) as AssetRow[];
-        const assetMap = new Map(assetRows.map((a) => [a.id, a]));
+        const placementAssetIds = new Set(plRows.map((p) => p.asset_id));
+        const scopedAssets = new Map(
+          assetRows.filter((a) => placementAssetIds.has(a.id)).map((a) => [a.id, a])
+        );
 
         if (cancelled) return;
 
@@ -182,37 +211,45 @@ export default function ArPage() {
         const controller = new WebxrController({
           client,
           canvas,
-          overlayRoot: immersiveUiRef.current ?? document.body,
+          overlayRoot: xrDomOverlayRef.current ?? document.body,
           onSessionStart: () => {
             setSessionActive(true);
             pushDebug("SDK: AR session started.");
             setStatus("AR active — tap Localize.");
+            applyRendererPixelRatio(controller, "sessionstart", pushDebug);
+            const meshGroup = getSdkMeshGroup(controller);
+            if (!meshGroup || placementsLoadedRef.current || cancelled) return;
+            /** Defer GLTF decode/upload so it does not compete with WebXR session + camera bind (reduces Aw, Snap). */
+            window.setTimeout(() => {
+              if (cancelled || placementsLoadedRef.current) return;
+              void (async () => {
+                try {
+                  await loadPlacementsIntoMeshGroup(meshGroup, plRows, scopedAssets);
+                  placementsLoadedRef.current = true;
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : "placement load failed";
+                  pushDebug(msg);
+                }
+              })();
+            }, 250);
           },
           onSessionEnd: () => {
             setSessionActive(false);
             setConfidence(null);
+            placementsLoadedRef.current = false;
             pushDebug("SDK: AR session ended.");
             setStatus("Session ended.");
           },
         });
         controllerRef.current = controller;
 
-        await controller.initialize(immersiveUiRef.current ?? undefined);
+        await controller.initialize(xrDomOverlayRef.current ?? undefined);
         pushDebug("SDK: WebxrController initialized.");
-        try {
-          const r = controller.getRenderer();
-          const pr = Math.min(1.5, window.devicePixelRatio || 1);
-          r.setPixelRatio(pr);
-          pushDebug(`SDK: renderer pixelRatio capped to ${pr}. mesh=${showMesh} gizmo=${showGizmo}`);
-        } catch {
-          pushDebug("SDK: could not adjust pixel ratio.");
-        }
+        applyRendererPixelRatio(controller, "post-init", pushDebug);
+        pushDebug(`SDK: mesh=${showMesh} gizmo=${showGizmo}`);
 
         const meshGroup = getSdkMeshGroup(controller);
-        if (meshGroup && !placementsLoadedRef.current) {
-          await loadPlacementsIntoMeshGroup(meshGroup, plRows, assetMap);
-          placementsLoadedRef.current = true;
-        } else if (!meshGroup) {
+        if (!meshGroup) {
           pushDebug("Could not find SDK meshGroup — placements not attached.");
         }
 
@@ -260,19 +297,11 @@ export default function ArPage() {
 
   return (
     <div className="relative min-h-screen bg-zinc-950">
-      <div ref={immersiveUiRef} className="relative flex min-h-screen flex-col">
-        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col p-4">
+      <div className="relative z-30 border-b border-zinc-800/80 bg-zinc-950/90 px-3 py-2 backdrop-blur-sm">
         <div className="pointer-events-auto flex flex-wrap items-center gap-3">
           <Link href={`/editor/${projectId}`} className="text-sm text-violet-400 hover:underline">
             ← Editor
           </Link>
-          <span className="text-sm text-zinc-400">{status}</span>
-          {confidence !== null ? (
-            <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">
-              conf {confidence.toFixed(2)}
-            </span>
-          ) : null}
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">@multisetai/vps SDK</span>
           <button
             type="button"
             onClick={() => setShowDebug((v) => !v)}
@@ -282,14 +311,14 @@ export default function ArPage() {
           </button>
         </div>
         {credentialError ? (
-          <div className="pointer-events-auto mt-3 max-w-2xl rounded-lg border border-amber-800/60 bg-amber-950/40 p-3 text-sm text-amber-100">
+          <div className="pointer-events-auto mt-2 max-w-2xl rounded-lg border border-amber-800/60 bg-amber-950/40 p-3 text-sm text-amber-100">
             {credentialError}
           </div>
         ) : null}
         {showDebug ? (
-          <div className="pointer-events-auto mt-3 w-full max-w-xl rounded-lg border border-zinc-700/80 bg-black/70 p-3 text-xs text-zinc-200">
+          <div className="pointer-events-auto mt-2 w-full max-w-xl rounded-lg border border-zinc-700/80 bg-black/70 p-3 text-xs text-zinc-200">
             <p className="mb-2 font-medium text-zinc-100">AR log</p>
-            <div className="max-h-44 space-y-1 overflow-auto">
+            <div className="max-h-36 space-y-1 overflow-auto">
               {debugLines.length === 0 ? <p className="text-zinc-400">No events yet.</p> : null}
               {debugLines.map((line, idx) => (
                 <p key={`${idx}-${line}`} className="font-mono text-[11px] leading-4 text-zinc-300">
@@ -299,18 +328,30 @@ export default function ArPage() {
             </div>
           </div>
         ) : null}
-        <div className="pointer-events-auto mt-auto flex justify-center pb-24">
-          <button
-            type="button"
-            onClick={() => void localize()}
-            disabled={busy || !sessionActive || !!credentialError}
-            className="rounded-lg bg-violet-600 px-6 py-3 text-sm font-medium text-white shadow-lg hover:bg-violet-500 disabled:opacity-50"
-          >
-            {busy ? "Localizing…" : "Localize"}
-          </button>
+      </div>
+
+      <div ref={xrDomOverlayRef} className="relative flex min-h-[calc(100vh-4rem)] flex-col">
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col p-3">
+          <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-lg bg-black/55 px-2 py-2 backdrop-blur-sm">
+            <span className="max-w-[60vw] truncate text-sm text-zinc-100">{status}</span>
+            {confidence !== null ? (
+              <span className="shrink-0 rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">
+                conf {confidence.toFixed(2)}
+              </span>
+            ) : null}
+          </div>
+          <div className="pointer-events-auto mt-auto flex justify-center pb-20">
+            <button
+              type="button"
+              onClick={() => void localize()}
+              disabled={busy || !sessionActive || !!credentialError}
+              className="rounded-lg bg-violet-600 px-6 py-3 text-sm font-medium text-white shadow-lg hover:bg-violet-500 disabled:opacity-50"
+            >
+              {busy ? "Localizing…" : "Localize"}
+            </button>
+          </div>
         </div>
-        </div>
-        <div ref={containerRef} className="h-[70vh] w-full flex-1 lg:h-screen" />
+        <div ref={containerRef} className="h-[70vh] w-full flex-1 lg:min-h-[480px]" />
       </div>
     </div>
   );
