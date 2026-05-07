@@ -141,6 +141,23 @@ This document summarizes the fixes applied during debugging of map loading and W
 
 ---
 
+## 8) AR switched to official `@multisetai/vps` WebXR SDK
+
+### Why
+- Custom WebXR capture + `/api/localize` duplicated fragile semantics (intrinsics, handedness, viewer vs eye pose, image sizing).
+- The SDK’s `WebxrController` + `MultisetClient` implement the same flow Multiset tests internally (`localizeFrame`, `applyMeshTransform`, default `isRightHanded: true` on `query-form`).
+
+### Tradeoff
+- `MultisetClient` **requires `clientId` + `clientSecret` in the browser bundle** for `authorize()`. Add `NEXT_PUBLIC_MULTISET_CLIENT_ID` / `NEXT_PUBLIC_MULTISET_CLIENT_SECRET` (see `.env.example`). Prefer a **demo-dedicated** Multiset app or accept the exposure for prototypes.
+
+### Placements
+- Editor placements are parented under the SDK’s internal `meshGroup` (same transform Multiset applies after localization), so they stay locked to the map.
+
+### Files
+- `src/app/ar/[projectId]/page.tsx`
+
+---
+
 ## Verification checklist
 
 1. Open editor/map for a known active map.

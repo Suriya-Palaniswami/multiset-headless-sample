@@ -5,234 +5,107 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { ARButton } from "three/examples/jsm/webxr/ARButton.js";
+import { MultisetClient, WebxrController } from "@multisetai/vps";
 import { apiFetch } from "@/lib/api";
-import type { AssetRow, LocalizeResponse, PlacementRow, ProjectRow } from "@/lib/types";
-import { captureFrameForLocalization } from "@/lib/ar/xrCapture";
-import { type ArAlignMode, buildMapCameraMatrix } from "@/lib/ar/mapPose";
+import type { AssetRow, PlacementRow, ProjectRow } from "@/lib/types";
 
-const CONFIDENCE_MIN = 0.7;
+const PLACED_ROOT_NAME = "placedObjectsRoot";
 
-const ALIGN_MODES: ArAlignMode[] = ["unity", "direct", "lhsReflection", "invMapCam"];
+/** SDK does not expose map root; it lives on the controller instance at runtime. */
+function getSdkMeshGroup(controller: WebxrController): THREE.Group | null {
+  const w = (controller as unknown as { world?: { meshVisualizer?: { meshGroup?: THREE.Group } } }).world;
+  return w?.meshVisualizer?.meshGroup ?? null;
+}
 
-function parseAlignMode(raw: string | null): ArAlignMode {
-  if (raw && ALIGN_MODES.includes(raw as ArAlignMode)) return raw as ArAlignMode;
-  return "unity";
+function getPublicMultisetCreds(): { clientId: string; clientSecret: string } | null {
+  const clientId =
+    process.env.NEXT_PUBLIC_MULTISET_CLIENT_ID?.trim() ||
+    process.env.NEXT_PUBLIC_MultisetClientId?.trim();
+  const clientSecret =
+    process.env.NEXT_PUBLIC_MULTISET_CLIENT_SECRET?.trim() ||
+    process.env.NEXT_PUBLICMultisetClientSecret?.trim();
+  if (!clientId || !clientSecret) return null;
+  return { clientId, clientSecret };
 }
 
 export default function ArPage() {
   const params = useParams();
-  const [alignMode, setAlignMode] = useState<ArAlignMode>("unity");
   const projectId = String(params.projectId ?? "");
   const pageRootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
   const [status, setStatus] = useState<string>("Initializing…");
   const [confidence, setConfidence] = useState<number | null>(null);
-  const [mapCode, setMapCode] = useState<string>("");
-  const [sessionActive, setSessionActive] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [showDebug, setShowDebug] = useState(true);
   const [debugLines, setDebugLines] = useState<string[]>([]);
-  const [localized, setLocalized] = useState(false);
-  const [localizeCount, setLocalizeCount] = useState(0);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [credentialError, setCredentialError] = useState<string | null>(null);
 
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const sceneRef = useRef<THREE.Scene | null>(null);
-  const mapRootRef = useRef<THREE.Group | null>(null);
-  const sessionRef = useRef<XRSession | null>(null);
-  const refSpaceRef = useRef<XRReferenceSpace | null>(null);
+  const controllerRef = useRef<WebxrController | null>(null);
+  const clientRef = useRef<MultisetClient | null>(null);
   const assetCache = useRef<Map<string, THREE.Object3D>>(new Map());
-  const arButtonRef = useRef<HTMLButtonElement | null>(null);
-  const localizeByTapRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    const saved = window.localStorage.getItem(`arAlign:${projectId}`);
-    if (saved && ALIGN_MODES.includes(saved as ArAlignMode)) {
-      setAlignMode(saved as ArAlignMode);
-      return;
-    }
-    const p = new URLSearchParams(window.location.search).get("arAlign");
-    setAlignMode(parseAlignMode(p));
-  }, [projectId]);
-
-  useEffect(() => {
-    window.localStorage.setItem(`arAlign:${projectId}`, alignMode);
-  }, [alignMode, projectId]);
-
-  function cycleAlignMode() {
-    setAlignMode((prev) => {
-      const idx = ALIGN_MODES.indexOf(prev);
-      const next = ALIGN_MODES[(idx + 1) % ALIGN_MODES.length];
-      pushDebug(`Pose mode switched: ${prev} -> ${next}`);
-      setLocalized(false);
-      setStatus("Pose mode changed. Re-run Localize.");
-      return next;
-    });
-  }
+  const placementsLoadedRef = useRef(false);
 
   const pushDebug = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
-    setDebugLines((prev) => [`[${stamp}] ${line}`, ...prev].slice(0, 12));
+    setDebugLines((prev) => [`[${stamp}] ${line}`, ...prev].slice(0, 14));
   }, []);
 
-  const loadScene = useCallback(
-    async (proj: ProjectRow, placements: PlacementRow[], assets: Map<string, AssetRow>) => {
-      setMapCode(proj.map_code);
-      pushDebug(`Project loaded. mapCode=${proj.map_code}`);
-      const scene = sceneRef.current;
-      const mapRoot = mapRootRef.current;
-      if (!scene || !mapRoot) return;
-
-      while (mapRoot.children.length) {
-        mapRoot.remove(mapRoot.children[0]);
+  const loadPlacementsIntoMeshGroup = useCallback(
+    async (meshGroup: THREE.Group, placements: PlacementRow[], assets: Map<string, AssetRow>) => {
+      let root = meshGroup.getObjectByName(PLACED_ROOT_NAME) as THREE.Group | null;
+      if (!root) {
+        root = new THREE.Group();
+        root.name = PLACED_ROOT_NAME;
+        meshGroup.add(root);
       }
-
-      const placedRoot = new THREE.Group();
-      placedRoot.name = "placedObjectsRoot";
-      mapRoot.add(placedRoot);
-
-      // Visual helpers so successful localization is obvious in-camera.
-      const axis = new THREE.AxesHelper(0.6);
-      axis.name = "debugAxis";
-      mapRoot.add(axis);
-      const originMarker = new THREE.Mesh(
-        new THREE.SphereGeometry(0.06, 16, 16),
-        new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0a6b82, emissiveIntensity: 0.7 })
-      );
-      originMarker.name = "debugOriginMarker";
-      mapRoot.add(originMarker);
+      while (root.children.length) root.remove(root.children[0]);
 
       const loader = new GLTFLoader();
       for (const pl of placements) {
         const asset = assets.get(pl.asset_id);
         if (!asset) continue;
-        let root = assetCache.current.get(asset.id);
-        if (!root) {
+        let proto = assetCache.current.get(asset.id);
+        if (!proto) {
           const gltf = await loader.loadAsync(asset.public_url);
-          root = gltf.scene;
-          assetCache.current.set(asset.id, root);
+          proto = gltf.scene;
+          assetCache.current.set(asset.id, proto);
         }
-        const inst = root.clone(true);
+        const inst = proto.clone(true);
         inst.position.set(pl.pos_x, pl.pos_y, pl.pos_z);
         inst.quaternion.set(pl.rot_x, pl.rot_y, pl.rot_z, pl.rot_w);
         inst.scale.set(pl.scale_x, pl.scale_y, pl.scale_z);
-        placedRoot.add(inst);
+        root.add(inst);
       }
-      setStatus("Ready — start AR, then localize.");
-      pushDebug("Scene loaded. Waiting for AR session.");
+      pushDebug(`Loaded ${root.children.length} placement(s) into map root.`);
     },
     [pushDebug]
   );
 
   useEffect(() => {
-    if (!projectId || !containerRef.current) return;
+    if (!projectId || !containerRef.current || !pageRootRef.current) return;
 
-    const scene = new THREE.Scene();
-    sceneRef.current = scene;
-
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.xr.enabled = true;
-    renderer.setAnimationLoop(() => {
-      renderer.render(scene, camera);
-    });
-    rendererRef.current = renderer;
-
-    const mapRoot = new THREE.Group();
-    mapRoot.name = "mapRoot";
-    mapRoot.visible = false;
-    scene.add(mapRoot);
-    mapRootRef.current = mapRoot;
-
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
+    const creds = getPublicMultisetCreds();
+    if (!creds) {
+      setCredentialError(
+        "AR requires Multiset browser credentials. Set NEXT_PUBLIC_MULTISET_CLIENT_ID and " +
+          "NEXT_PUBLIC_MULTISET_CLIENT_SECRET (same values as server MULTISET_*). This exposes secrets to the bundle — use a demo key or separate Multiset app for Web-only AR."
+      );
+      setStatus("Missing public Multiset credentials.");
+      pushDebug("No NEXT_PUBLIC_MULTISET_CLIENT_ID / NEXT_PUBLIC_MULTISET_CLIENT_SECRET.");
+      return;
+    }
+    setCredentialError(null);
 
     const container = containerRef.current;
-    container.appendChild(renderer.domElement);
+    const canvas = document.createElement("canvas");
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.display = "block";
+    container.appendChild(canvas);
 
-    const onResize = () => {
-      if (!container) return;
-      const w = container.clientWidth;
-      const h = container.clientHeight;
-      camera.aspect = w / Math.max(h, 1);
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    onResize();
-    window.addEventListener("resize", onResize);
-
-    const overlayRoot = pageRootRef.current ?? document.body;
-    const arBtn = ARButton.createButton(renderer, {
-      requiredFeatures: ["hit-test"],
-      optionalFeatures: ["local-floor", "dom-overlay", "camera-access"],
-      domOverlay: { root: overlayRoot },
-    });
-    arBtn.style.position = "fixed";
-    arBtn.style.bottom = "24px";
-    arBtn.style.left = "50%";
-    arBtn.style.transform = "translateX(-50%)";
-    arBtn.style.zIndex = "40";
-    arBtn.style.display = "none";
-    document.body.appendChild(arBtn);
-    arButtonRef.current = arBtn as HTMLButtonElement;
-    pushDebug("AR launcher initialized.");
-
-    renderer.xr.addEventListener("sessionstart", async () => {
-      const session = renderer.xr.getSession();
-      sessionRef.current = session;
-      setSessionActive(true);
-      if (session) {
-        try {
-          refSpaceRef.current = await session.requestReferenceSpace("local-floor");
-          pushDebug("XR reference space: local-floor");
-        } catch {
-          refSpaceRef.current = await session.requestReferenceSpace("local");
-          pushDebug("XR reference space: local (local-floor unavailable)");
-        }
-        const onSelect = () => {
-          pushDebug("XR select event: tap detected, attempting localization.");
-          localizeByTapRef.current?.();
-        };
-        session.addEventListener("select", onSelect);
-        (session as XRSession & { __onSelectLocalize?: () => void }).__onSelectLocalize = onSelect;
-      }
-      setStatus("Session active — tap Localize button (or tap screen if controls are hidden).");
-      pushDebug("AR session started. If controls disappear, tap screen to localize.");
-    });
-    renderer.xr.addEventListener("sessionend", () => {
-      const s = sessionRef.current as (XRSession & { __onSelectLocalize?: () => void }) | null;
-      if (s?.__onSelectLocalize) {
-        s.removeEventListener("select", s.__onSelectLocalize);
-      }
-      sessionRef.current = null;
-      refSpaceRef.current = null;
-      setSessionActive(false);
-      setLocalized(false);
-      setStatus("Session ended.");
-      pushDebug("AR session ended.");
-    });
-
-    (async () => {
-      if (!("xr" in navigator)) {
-        setStatus("WebXR unavailable on this device/browser.");
-        pushDebug("navigator.xr missing.");
-        return;
-      }
-      try {
-        const supported = await (navigator as Navigator & {
-          xr?: { isSessionSupported: (mode: XRSessionMode) => Promise<boolean> };
-        }).xr?.isSessionSupported("immersive-ar");
-        if (!supported) {
-          setStatus("Immersive AR not supported. Use Chrome on an AR-capable mobile device over HTTPS.");
-          pushDebug("immersive-ar not supported.");
-        } else {
-          pushDebug("immersive-ar supported.");
-        }
-      } catch {
-        setStatus("Could not verify AR support in this browser.");
-        pushDebug("isSessionSupported threw an error.");
-      }
-    })();
+    let cancelled = false;
 
     (async () => {
       try {
@@ -249,140 +122,116 @@ export default function ArPage() {
         const assetRows = (await assetsRes.json()) as AssetRow[];
         const assetMap = new Map(assetRows.map((a) => [a.id, a]));
 
-        await loadScene(proj, plRows, assetMap);
+        if (cancelled) return;
+
+        const client = new MultisetClient({
+          clientId: creds.clientId,
+          clientSecret: creds.clientSecret,
+          code: proj.map_code,
+          mapType: "map",
+          /** Matches @multisetai/vps default FormData (isRightHanded true). */
+          isRightHanded: true,
+          confidenceCheck: true,
+          confidenceThreshold: 0.7,
+          /** Same mesh/transform path Multiset uses in samples; aligns VPS frame with rendered root. */
+          showMesh: true,
+          showGizmo: false,
+          autoLocalize: false,
+          relocalization: false,
+          onLocalizationInit: () => {
+            pushDebug("SDK: localization started.");
+            setStatus("Localizing…");
+          },
+          onLocalizationSuccess: (res) => {
+            const c = res.localizeData.confidence ?? 0;
+            setConfidence(c);
+            setStatus(`Localized (SDK) — conf ${c.toFixed(2)}`);
+            pushDebug(`SDK: success poseFound=${res.localizeData.poseFound} conf=${c.toFixed(2)}`);
+          },
+          onLocalizationFailure: (reason) => {
+            setConfidence(null);
+            setStatus(reason ?? "Localization failed.");
+            pushDebug(`SDK: failure — ${reason ?? "unknown"}`);
+          },
+          onError: (err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            pushDebug(`SDK error: ${msg}`);
+          },
+        });
+        clientRef.current = client;
+
+        await client.authorize();
+        pushDebug("SDK: authorized.");
+
+        const controller = new WebxrController({
+          client,
+          canvas,
+          overlayRoot: pageRootRef.current ?? document.body,
+          onSessionStart: () => {
+            setSessionActive(true);
+            pushDebug("SDK: AR session started.");
+            setStatus("AR active — tap Localize.");
+          },
+          onSessionEnd: () => {
+            setSessionActive(false);
+            setConfidence(null);
+            pushDebug("SDK: AR session ended.");
+            setStatus("Session ended.");
+          },
+        });
+        controllerRef.current = controller;
+
+        await controller.initialize(pageRootRef.current ?? undefined);
+        pushDebug("SDK: WebxrController initialized.");
+
+        const meshGroup = getSdkMeshGroup(controller);
+        if (meshGroup && !placementsLoadedRef.current) {
+          await loadPlacementsIntoMeshGroup(meshGroup, plRows, assetMap);
+          placementsLoadedRef.current = true;
+        } else if (!meshGroup) {
+          pushDebug("Could not find SDK meshGroup — placements not attached.");
+        }
+
+        setStatus("Ready — use Start AR in page, then Localize.");
       } catch (e) {
-        setStatus(e instanceof Error ? e.message : "Load failed");
-        pushDebug(`Initial load failed: ${e instanceof Error ? e.message : "Unknown error"}`);
+        const msg = e instanceof Error ? e.message : "AR init failed";
+        setStatus(msg);
+        pushDebug(msg);
       }
     })();
 
     return () => {
-      window.removeEventListener("resize", onResize);
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      if (arBtn.parentElement) arBtn.parentElement.removeChild(arBtn);
-      if (renderer.domElement.parentElement) {
-        renderer.domElement.parentElement.removeChild(renderer.domElement);
-      }
+      cancelled = true;
+      placementsLoadedRef.current = false;
+      controllerRef.current?.dispose();
+      controllerRef.current = null;
+      clientRef.current = null;
+      if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
     };
-  }, [projectId, loadScene]);
+  }, [projectId, loadPlacementsIntoMeshGroup, pushDebug]);
 
-  function startArSession() {
-    const launcher = arButtonRef.current;
-    if (!launcher) {
-      setStatus("AR launcher not ready yet.");
-      pushDebug("AR launcher button missing.");
+  async function localize() {
+    const ctrl = controllerRef.current;
+    if (!ctrl) {
+      setStatus("AR not ready.");
       return;
     }
-    pushDebug("Requesting AR session (permission prompt may appear).");
-    launcher.click();
-  }
-
-  const localize = useCallback(async () => {
-    const renderer = rendererRef.current;
-    const session = sessionRef.current ?? renderer?.xr.getSession() ?? null;
-    const refSpace = refSpaceRef.current;
-    const mapRoot = mapRootRef.current;
-    if (busy) {
-      pushDebug("Localize ignored: previous localization still running.");
+    if (!ctrl.hasActiveSession()) {
+      setStatus("Start AR first (browser AR button).");
+      pushDebug("Localize blocked: no active WebXR session.");
       return;
     }
-    if (!renderer || !session) {
-      setStatus("Start an AR session first.");
-      pushDebug("Localize blocked: XR session is not active.");
-      return;
-    }
-    if (!refSpace) {
-      setStatus("AR session not fully ready. Try again in a second.");
-      pushDebug("Localize blocked: XR reference space missing.");
-      return;
-    }
-    if (!mapRoot) {
-      setStatus("AR scene not ready yet.");
-      pushDebug("Localize blocked: mapRoot missing.");
-      return;
-    }
-
+    if (busy) return;
     setBusy(true);
     try {
-      setStatus("Localizing…");
-      setConfidence(null);
-      setLocalizeCount((n) => n + 1);
-      pushDebug(`Capturing camera frame... (arAlign=${alignMode})`);
-
-      const cap = await captureFrameForLocalization(renderer, session, refSpace);
-      if (!cap) {
-        setStatus("Could not capture camera frame. Ensure browser/device supports WebXR camera-access.");
-        pushDebug("Frame capture failed. Likely missing camera-access support, camera image texture, or WebGL readback.");
-        return;
-      }
-
-      const fd = new FormData();
-      fd.append("mapCode", mapCode);
-      fd.append("fx", String(cap.intrinsics.fx));
-      fd.append("fy", String(cap.intrinsics.fy));
-      fd.append("px", String(cap.intrinsics.px));
-      fd.append("py", String(cap.intrinsics.py));
-      fd.append("width", String(cap.intrinsics.width));
-      fd.append("height", String(cap.intrinsics.height));
-      fd.append("isRightHanded", "false");
-      fd.append("queryImage", cap.blob, "frame.jpg");
-
-      const res = await apiFetch("/api/localize", { method: "POST", body: fd });
-      if (!res.ok) {
-        const body = await res.text();
-        setStatus(body);
-        pushDebug(`Localization API failed: ${body}`);
-        return;
-      }
-      const loc = (await res.json()) as LocalizeResponse;
-      const conf = loc.confidence ?? 0;
-      setConfidence(conf);
-      pushDebug(`Localization response: poseFound=${String(loc.poseFound)}, conf=${conf.toFixed(2)}`);
-
-      if (!loc.poseFound) {
-        setLocalized(false);
-        setStatus("Still localizing — no pose.");
-        return;
-      }
-      if (conf < CONFIDENCE_MIN) {
-        setLocalized(false);
-        setStatus(`Low confidence (${conf.toFixed(2)}). Move device or retry.`);
-        return;
-      }
-
-      const T_world_camera = cap.viewerMatrix;
-      const T_map_camera = buildMapCameraMatrix(loc, alignMode);
-      // T_world_map * T_map_camera = T_world_camera  =>  T_world_map = T_world_camera * inv(T_map_camera)
-      const T_world_map = new THREE.Matrix4().multiplyMatrices(T_world_camera, T_map_camera.clone().invert());
-      mapRoot.matrix.copy(T_world_map);
-      mapRoot.matrixAutoUpdate = false;
-      mapRoot.visible = true;
-      setLocalized(true);
-      setStatus("Localized — content aligned.");
-      pushDebug("Localization accepted. mapRoot updated.");
+      await ctrl.localizeFrame();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Localization failed.";
+      const msg = e instanceof Error ? e.message : "localizeFrame failed";
       setStatus(msg);
-      pushDebug(`Localization exception: ${msg}`);
+      pushDebug(msg);
     } finally {
       setBusy(false);
     }
-  }, [alignMode, busy, mapCode, pushDebug]);
-
-  useEffect(() => {
-    localizeByTapRef.current = () => {
-      void localize();
-    };
-  }, [localize]);
-
-  async function handlePrimaryAction() {
-    if (busy) return;
-    if (!sessionActive) {
-      startArSession();
-      return;
-    }
-    await localize();
   }
 
   return (
@@ -398,25 +247,7 @@ export default function ArPage() {
               conf {confidence.toFixed(2)}
             </span>
           ) : null}
-          <span
-            className={`rounded px-2 py-0.5 text-xs ${
-              localized ? "bg-emerald-900/70 text-emerald-200" : "bg-amber-900/70 text-amber-200"
-            }`}
-          >
-            {localized ? "Localized" : "Not localized"}
-          </span>
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">tries {localizeCount}</span>
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400" title="Add ?arAlign= to URL">
-            pose {alignMode}
-          </span>
-          <button
-            type="button"
-            onClick={cycleAlignMode}
-            className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300"
-            title="Cycle pose conversion mode and relocalize"
-          >
-            Switch pose mode
-          </button>
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">@multisetai/vps SDK</span>
           <button
             type="button"
             onClick={() => setShowDebug((v) => !v)}
@@ -425,10 +256,15 @@ export default function ArPage() {
             {showDebug ? "Hide log" : "Show log"}
           </button>
         </div>
+        {credentialError ? (
+          <div className="pointer-events-auto mt-3 max-w-2xl rounded-lg border border-amber-800/60 bg-amber-950/40 p-3 text-sm text-amber-100">
+            {credentialError}
+          </div>
+        ) : null}
         {showDebug ? (
           <div className="pointer-events-auto mt-3 w-full max-w-xl rounded-lg border border-zinc-700/80 bg-black/70 p-3 text-xs text-zinc-200">
-            <p className="mb-2 font-medium text-zinc-100">AR session log</p>
-            <div className="max-h-44 overflow-auto space-y-1">
+            <p className="mb-2 font-medium text-zinc-100">AR log</p>
+            <div className="max-h-44 space-y-1 overflow-auto">
               {debugLines.length === 0 ? <p className="text-zinc-400">No events yet.</p> : null}
               {debugLines.map((line, idx) => (
                 <p key={`${idx}-${line}`} className="font-mono text-[11px] leading-4 text-zinc-300">
@@ -438,14 +274,14 @@ export default function ArPage() {
             </div>
           </div>
         ) : null}
-        <div className="pointer-events-auto mt-auto flex justify-center gap-3 pb-24">
+        <div className="pointer-events-auto mt-auto flex justify-center pb-24">
           <button
             type="button"
-            onClick={() => void handlePrimaryAction()}
-            className="rounded-lg bg-violet-600 px-6 py-3 text-sm font-medium text-white shadow-lg hover:bg-violet-500 disabled:opacity-60"
-            disabled={busy}
+            onClick={() => void localize()}
+            disabled={busy || !sessionActive || !!credentialError}
+            className="rounded-lg bg-violet-600 px-6 py-3 text-sm font-medium text-white shadow-lg hover:bg-violet-500 disabled:opacity-50"
           >
-            {sessionActive ? (localized ? "Relocalize" : "Localize") : "Start AR"}
+            {busy ? "Localizing…" : "Localize"}
           </button>
         </div>
       </div>
