@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { PlacementWithAsset } from "@/components/EditorCanvas";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiUrl } from "@/lib/api";
 import { captureFrameForLocalization } from "@/lib/ar/xrCapture";
 import { solveWorldMapMatrix, type ArAlignMode } from "@/lib/ar/mapPose";
 import type { AssetRow, LocalizeResponse, PlacementRow, ProjectRow } from "@/lib/types";
@@ -70,6 +70,64 @@ export default function ArPage() {
     setDebugLines((prev) => [`[${stamp}] ${line}`, ...prev].slice(0, 24));
   }, []);
 
+  const arLog = useCallback(
+    (
+      event: string,
+      data?: Record<string, unknown>,
+      level: "debug" | "info" | "warn" | "error" = "info",
+      message?: string
+    ) => {
+      try {
+        const payload = {
+          projectId,
+          mapCode: currentMapCodeRef.current,
+          level,
+          event,
+          message,
+          data,
+          url: window.location.href,
+          userAgent: navigator.userAgent,
+        };
+        const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+        if (navigator.sendBeacon?.(apiUrl("/api/ar-logs"), blob)) return;
+        void fetch(apiUrl("/api/ar-logs"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        });
+      } catch {
+        // Logging must never affect AR behavior.
+      }
+    },
+    [projectId]
+  );
+
+  useEffect(() => {
+    const onError = (e: ErrorEvent) => {
+      arLog("window_error", {
+        message: e.message,
+        filename: e.filename,
+        lineno: e.lineno,
+        colno: e.colno,
+      }, "error");
+    };
+    const onUnhandled = (e: PromiseRejectionEvent) => {
+      arLog("unhandled_rejection", { reason: String(e.reason) }, "error");
+    };
+    const onPageHide = () => {
+      arLog("pagehide", { sessionActive: Boolean(xrSessionRef.current) }, "debug");
+    };
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onUnhandled);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onUnhandled);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [arLog]);
+
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
@@ -122,6 +180,24 @@ export default function ArPage() {
     canvas.style.width = "100%";
     canvas.style.height = "100%";
     host.appendChild(canvas);
+    const onContextLost = (e: Event) => {
+      e.preventDefault();
+      arLog(
+        "webgl_context_lost",
+        {
+          sessionActive: Boolean(xrSessionRef.current),
+          rendererInfo: rendererRef.current
+            ? {
+                memory: rendererRef.current.info.memory,
+                render: rendererRef.current.info.render,
+              }
+            : null,
+        },
+        "error"
+      );
+      pushDebug("WebGL context lost.");
+    };
+    canvas.addEventListener("webglcontextlost", onContextLost, false);
 
     const scene = new THREE.Scene();
     sceneRef.current = scene;
@@ -140,6 +216,12 @@ export default function ArPage() {
     renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     rendererRef.current = renderer;
+    arLog("renderer_initialized", {
+      dpr: window.devicePixelRatio || 1,
+      pixelRatio: Math.min(window.devicePixelRatio || 1, 1.5),
+      width: host.clientWidth,
+      height: host.clientHeight,
+    });
 
     const mapRoot = new THREE.Group();
     mapRoot.name = "mapRoot";
@@ -184,9 +266,10 @@ export default function ArPage() {
       cameraRef.current = null;
       mapRootRef.current = null;
       placedRootRef.current = null;
+      canvas.removeEventListener("webglcontextlost", onContextLost, false);
       if (canvas.parentElement === host) host.removeChild(canvas);
     };
-  }, []);
+  }, [arLog, pushDebug]);
 
   const loadPlacementsIntoMapRoot = useCallback(async () => {
     const root = placedRootRef.current;
@@ -198,37 +281,54 @@ export default function ArPage() {
     }
 
     const loader = new GLTFLoader();
+    arLog("placements_load_start", { count: placementsRef.current.length });
     for (const p of placementsRef.current) {
-      let proto = assetCache.get(p.public_url);
-      if (!proto) {
-        const gltf = await loader.loadAsync(p.public_url);
-        proto = gltf.scene;
-        assetCache.set(p.public_url, proto);
+      try {
+        let proto = assetCache.get(p.public_url);
+        if (!proto) {
+          const gltf = await loader.loadAsync(p.public_url);
+          proto = gltf.scene;
+          assetCache.set(p.public_url, proto);
+        }
+        const obj = proto.clone(true);
+        const g = new THREE.Group();
+        g.name = p.name;
+        g.position.set(p.pos_x, p.pos_y, p.pos_z);
+        g.quaternion.set(p.rot_x, p.rot_y, p.rot_z, p.rot_w);
+        g.scale.set(p.scale_x, p.scale_y, p.scale_z);
+        g.add(obj);
+        root.add(g);
+      } catch (e) {
+        arLog(
+          "placement_load_error",
+          { placementId: p.id, assetUrl: p.public_url, error: e instanceof Error ? e.message : String(e) },
+          "error"
+        );
       }
-      const obj = proto.clone(true);
-      const g = new THREE.Group();
-      g.name = p.name;
-      g.position.set(p.pos_x, p.pos_y, p.pos_z);
-      g.quaternion.set(p.rot_x, p.rot_y, p.rot_z, p.rot_w);
-      g.scale.set(p.scale_x, p.scale_y, p.scale_z);
-      g.add(obj);
-      root.add(g);
     }
     pushDebug(`Loaded ${root.children.length} placement(s) under mapRoot.`);
-  }, [pushDebug]);
+    arLog("placements_load_success", { loaded: root.children.length, requested: placementsRef.current.length });
+  }, [arLog, pushDebug]);
 
   const startAr = useCallback(async () => {
     const renderer = rendererRef.current;
     if (!renderer) return;
+    arLog("start_ar_clicked", {
+      hasNavigatorXr: Boolean(navigator.xr),
+      dpr: window.devicePixelRatio || 1,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    });
     const xr = navigator.xr;
     if (!xr) {
       setStatus("WebXR is not available in this browser.");
+      arLog("webxr_unavailable", undefined, "warn");
       return;
     }
     if (xrSessionRef.current) return;
 
     try {
       const supported = await xr.isSessionSupported("immersive-ar");
+      arLog("immersive_ar_support_checked", { supported });
       if (!supported) {
         setStatus("Immersive AR is not supported on this device/browser.");
         return;
@@ -243,6 +343,10 @@ export default function ArPage() {
         sessionInit.optionalFeatures = [...(sessionInit.optionalFeatures ?? []), "dom-overlay"];
         sessionInit.domOverlay = { root: rootRef.current };
       }
+      arLog("request_session_start", {
+        requiredFeatures: sessionInit.requiredFeatures,
+        optionalFeatures: sessionInit.optionalFeatures,
+      });
       const session = await xr.requestSession("immersive-ar", sessionInit);
 
       session.addEventListener("end", () => {
@@ -260,13 +364,15 @@ export default function ArPage() {
       setSessionActive(true);
       setStatus("AR active — tap Localize. Screen tap also localizes.");
       pushDebug("WebXR session started (REST localization is still server/API based).");
+      arLog("webxr_session_started", { renderState: Boolean(session.renderState) });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Camera permission failed";
       setStatus(msg);
       pushDebug(msg);
+      arLog("start_ar_error", { error: msg }, "error");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pushDebug]);
+  }, [arLog, pushDebug]);
 
   const localize = useCallback(async () => {
     const renderer = rendererRef.current;
@@ -288,10 +394,12 @@ export default function ArPage() {
     setConfidence(null);
     setLastResult(null);
     try {
+      arLog("localize_start", { poseMode: localizePoseAlignment() });
       const capture = await captureFrameForLocalization(renderer, session, refSpace, 1280);
       if (!capture) {
         setStatus("Could not capture XR camera frame. Check camera-access support.");
         pushDebug("XR capture failed: no camera texture or viewer pose.");
+        arLog("xr_capture_failed", undefined, "warn");
         return;
       }
 
@@ -300,6 +408,13 @@ export default function ArPage() {
           `~${Math.round(capture.blob.size / 1024)}KB; ` +
           `fx=${capture.intrinsics.fx.toFixed(1)} fy=${capture.intrinsics.fy.toFixed(1)}`
       );
+      arLog("xr_capture_success", {
+        width: capture.intrinsics.width,
+        height: capture.intrinsics.height,
+        blobKb: Math.round(capture.blob.size / 1024),
+        fx: capture.intrinsics.fx,
+        fy: capture.intrinsics.fy,
+      });
 
       const fd = new FormData();
       fd.append("mapCode", mapCode);
@@ -317,6 +432,7 @@ export default function ArPage() {
       if (!res.ok) {
         setStatus(`Localize failed (${res.status})`);
         pushDebug(text.slice(0, 400));
+        arLog("rest_localize_error", { status: res.status, body: text.slice(0, 1000) }, "error");
         return;
       }
       let parsed: LocalizeResponse;
@@ -324,11 +440,20 @@ export default function ArPage() {
         parsed = JSON.parse(text) as LocalizeResponse;
       } catch {
         setStatus("Invalid JSON from server");
+        arLog("rest_localize_invalid_json", { body: text.slice(0, 1000) }, "error");
         return;
       }
       setLastResult(parsed);
       const c = parsed.confidence ?? null;
       setConfidence(c);
+      arLog("rest_localize_success", {
+        poseFound: parsed.poseFound,
+        confidence: c,
+        mapCodes: parsed.mapCodes,
+        responseTime: parsed.responseTime,
+        position: parsed.position,
+        rotation: parsed.rotation,
+      });
       if (parsed.poseFound) {
         await loadPlacementsIntoMapRoot();
         const align = localizePoseAlignment();
@@ -341,6 +466,16 @@ export default function ArPage() {
         }
         setStatus(`Localized — conf ${(c ?? 0).toFixed(3)} (mapRoot aligned)`);
         pushDebug(`poseFound=${parsed.poseFound} align=${align} mapCodes=${JSON.stringify(parsed.mapCodes)}`);
+        arLog("maproot_aligned", {
+          align,
+          worldMapPosition: mapRoot
+            ? { x: mapRoot.position.x, y: mapRoot.position.y, z: mapRoot.position.z }
+            : null,
+          worldMapQuaternion: mapRoot
+            ? { x: mapRoot.quaternion.x, y: mapRoot.quaternion.y, z: mapRoot.quaternion.z, w: mapRoot.quaternion.w }
+            : null,
+          rendererInfo: renderer.info,
+        });
       } else {
         setStatus("No pose for this frame — try aim, lighting, or another angle.");
         pushDebug("poseFound=false");
@@ -348,7 +483,7 @@ export default function ArPage() {
     } finally {
       setBusy(false);
     }
-  }, [busy, loadPlacementsIntoMapRoot, pushDebug]);
+  }, [arLog, busy, loadPlacementsIntoMapRoot, pushDebug]);
 
   return (
     <div ref={rootRef} className="relative min-h-screen bg-zinc-950">

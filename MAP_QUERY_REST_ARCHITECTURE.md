@@ -197,6 +197,36 @@ The route **repacks** this into **`FormData`** for `query-form`. **Do not** hand
 
 ---
 
+## AR Diagnostics in Supabase
+
+**Files:** `src/app/api/ar-logs/route.ts`, `src/app/ar/[projectId]/page.tsx`, `supabase/schema.sql`
+
+The AR page sends crash-adjacent breadcrumbs to **`POST /api/ar-logs`**, which stores rows in the Supabase **`ar_logs`** table through the server-side service role client.
+
+Important events include:
+
+- `renderer_initialized`
+- `start_ar_clicked`
+- `immersive_ar_support_checked`
+- `request_session_start`
+- `webxr_session_started`
+- `webgl_context_lost`
+- `localize_start`
+- `xr_capture_success` / `xr_capture_failed`
+- `rest_localize_success` / `rest_localize_error`
+- `placements_load_start` / `placements_load_success`
+- `maproot_aligned`
+
+Read recent logs from Supabase directly or through:
+
+```text
+GET /api/ar-logs?projectId=<uuid>&limit=100
+```
+
+If `/api/ar-logs` returns `relation "ar_logs" does not exist`, run the latest `supabase/schema.sql` in the Supabase SQL editor.
+
+---
+
 ## Multi-image query API (reference only)
 
 Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per request with **per-image SLAM pose** (`imageN_data`). This sample **does not** implement it end-to-end; use the official OpenAPI YAML from the [map query docs](https://docs.multiset.ai/basics/rest-api-docs/map-query) when you need temporal robustness from a moving camera.
@@ -236,3 +266,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-09 | **AR overlay pose bugfix:** avoid R3F `camera` prop reset; apply localized camera in **`useFrame`**; optional `NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE`. |
 | 2026-05-09 | **AR overlay:** rewritten as **plain Three.js** (no R3F) for Multiset-style “vanilla” rendering stack. |
 | 2026-05-09 | **AR runtime:** replaced webcam/snapshot overlay with **vanilla WebXR + REST**. WebXR supplies `T_world_camera`; Multiset REST supplies `T_map_camera`; app solves `T_world_map` and parents editor placements under `mapRoot`. |
+| 2026-05-09 | **AR diagnostics:** added Supabase-backed `ar_logs` table and `/api/ar-logs` route; AR page sends WebXR/capture/localize/GL context breadcrumbs. |

@@ -37,3 +37,19 @@ create table if not exists placements (
 );
 
 create index if not exists placements_project_id_idx on placements(project_id);
+
+create table if not exists ar_logs (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid null references projects(id) on delete set null,
+  map_code text null,
+  level text not null default 'info' check (level in ('debug', 'info', 'warn', 'error')),
+  event text not null,
+  message text null,
+  data jsonb null,
+  url text null,
+  user_agent text null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists ar_logs_project_id_created_at_idx on ar_logs(project_id, created_at desc);
+create index if not exists ar_logs_created_at_idx on ar_logs(created_at desc);
