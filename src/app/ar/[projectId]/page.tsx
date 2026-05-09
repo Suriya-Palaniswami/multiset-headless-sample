@@ -37,6 +37,12 @@ function arUseDomOverlay(): boolean {
   return process.env.NEXT_PUBLIC_AR_DOM_OVERLAY === "true";
 }
 
+function arFramebufferScale(): number {
+  const raw = Number(process.env.NEXT_PUBLIC_AR_FRAMEBUFFER_SCALE ?? "");
+  if (Number.isFinite(raw) && raw > 0) return Math.min(1, Math.max(0.25, raw));
+  return 0.5;
+}
+
 function disposeObject(root: THREE.Object3D) {
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
@@ -357,6 +363,8 @@ export default function ArPage() {
       }
 
       renderer.xr.setReferenceSpaceType("local");
+      const framebufferScale = arFramebufferScale();
+      renderer.xr.setFramebufferScaleFactor(framebufferScale);
       const sessionInit: XRSessionInit & { domOverlay?: { root: Element } } = {
         requiredFeatures: ["camera-access"],
         optionalFeatures: ["local-floor"],
@@ -368,6 +376,7 @@ export default function ArPage() {
       arLog("request_session_start", {
         requiredFeatures: sessionInit.requiredFeatures,
         optionalFeatures: sessionInit.optionalFeatures,
+        framebufferScale,
       });
       const session = await xr.requestSession("immersive-ar", sessionInit);
 

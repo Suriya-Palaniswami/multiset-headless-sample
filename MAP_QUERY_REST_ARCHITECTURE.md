@@ -288,3 +288,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-09 | **AR diagnostics:** `/api/ar-logs` also writes downloadable `.jsonl` text files to Supabase Storage bucket `ar-logs`; `GET ...&format=jsonl` returns a downloadable log file. |
 | 2026-05-09 | **AR stability:** safe mode disables `dom-overlay` by default and caps renderer pixel ratio to ≤ 1; screen tap (`select`) still triggers localization in AR. |
 | 2026-05-09 | **AR log management:** added `sessionId`, `seq`, and `clientTs`; Storage logs are grouped by browser session to make repeated test runs easier to download and compare. |
+| 2026-05-09 | **AR stability:** capped WebXR framebuffer scale with `NEXT_PUBLIC_AR_FRAMEBUFFER_SCALE` (default `0.5`) because logs show crashes after WebXR session start but before REST localization. |
