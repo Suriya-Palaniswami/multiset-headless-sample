@@ -35,7 +35,8 @@ export async function POST(request: Request) {
       formData.append("py", String(intr.py));
       formData.append("width", String(res.width));
       formData.append("height", String(res.height));
-      formData.append("isRightHanded", String(json.isRightHanded ?? false));
+      /** Default true: aligns with Multiset Web/SDK form examples; set false for LHS / Unity-style pipelines. */
+      formData.append("isRightHanded", String(json.isRightHanded ?? true));
 
       if (json.queryImage?.startsWith("data:")) {
         const base64 = json.queryImage.split(",")[1];
