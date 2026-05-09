@@ -68,6 +68,10 @@ function applyRendererPixelRatio(controller: WebxrController, label: string, pus
   }
 }
 
+function arLoadPlacements(): boolean {
+  return process.env.NEXT_PUBLIC_AR_LOAD_PLACEMENTS !== "false";
+}
+
 export default function ArPage() {
   const params = useParams();
   const projectId = String(params.projectId ?? "");
@@ -218,6 +222,10 @@ export default function ArPage() {
             setStatus("AR active — tap Localize.");
             applyRendererPixelRatio(controller, "sessionstart", pushDebug);
             const meshGroup = getSdkMeshGroup(controller);
+            if (!arLoadPlacements()) {
+              pushDebug("Placements skipped (NEXT_PUBLIC_AR_LOAD_PLACEMENTS=false).");
+              return;
+            }
             if (!meshGroup || placementsLoadedRef.current || cancelled) return;
             /** Defer GLTF decode/upload so it does not compete with WebXR session + camera bind (reduces Aw, Snap). */
             window.setTimeout(() => {
