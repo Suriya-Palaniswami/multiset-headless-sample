@@ -18,3 +18,7 @@ export function getSupabaseAdmin(): SupabaseClient {
 export function getGlbBucket(): string {
   return process.env.SUPABASE_GLBS_BUCKET ?? "glb-assets";
 }
+
+export function getArLogsBucket(): string {
+  return process.env.SUPABASE_AR_LOGS_BUCKET ?? "ar-logs";
+}

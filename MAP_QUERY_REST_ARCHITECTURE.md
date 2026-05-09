@@ -201,7 +201,10 @@ The route **repacks** this into **`FormData`** for `query-form`. **Do not** hand
 
 **Files:** `src/app/api/ar-logs/route.ts`, `src/app/ar/[projectId]/page.tsx`, `supabase/schema.sql`
 
-The AR page sends crash-adjacent breadcrumbs to **`POST /api/ar-logs`**, which stores rows in the Supabase **`ar_logs`** table through the server-side service role client.
+The AR page sends crash-adjacent breadcrumbs to **`POST /api/ar-logs`**, which stores:
+
+- rows in the Supabase **`ar_logs`** table
+- downloadable `.jsonl` text files in Supabase Storage bucket **`ar-logs`** (or `SUPABASE_AR_LOGS_BUCKET`)
 
 Important events include:
 
@@ -221,9 +224,16 @@ Read recent logs from Supabase directly or through:
 
 ```text
 GET /api/ar-logs?projectId=<uuid>&limit=100
+GET /api/ar-logs?projectId=<uuid>&limit=100&format=jsonl
 ```
 
-If `/api/ar-logs` returns `relation "ar_logs" does not exist`, run the latest `supabase/schema.sql` in the Supabase SQL editor.
+In Supabase Storage, download files from:
+
+```text
+ar-logs/<project-id>/<yyyy-mm-dd>/*.jsonl
+```
+
+If `/api/ar-logs` returns `relation "ar_logs" does not exist`, run the latest `supabase/schema.sql` in the Supabase SQL editor. If Storage upload fails, create a private bucket named `ar-logs` in Supabase Storage (the API also tries to create it automatically with the service role key).
 
 ---
 
@@ -267,3 +277,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-09 | **AR overlay:** rewritten as **plain Three.js** (no R3F) for Multiset-style “vanilla” rendering stack. |
 | 2026-05-09 | **AR runtime:** replaced webcam/snapshot overlay with **vanilla WebXR + REST**. WebXR supplies `T_world_camera`; Multiset REST supplies `T_map_camera`; app solves `T_world_map` and parents editor placements under `mapRoot`. |
 | 2026-05-09 | **AR diagnostics:** added Supabase-backed `ar_logs` table and `/api/ar-logs` route; AR page sends WebXR/capture/localize/GL context breadcrumbs. |
+| 2026-05-09 | **AR diagnostics:** `/api/ar-logs` also writes downloadable `.jsonl` text files to Supabase Storage bucket `ar-logs`; `GET ...&format=jsonl` returns a downloadable log file. |
