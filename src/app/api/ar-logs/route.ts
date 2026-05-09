@@ -6,6 +6,9 @@ export const dynamic = "force-dynamic";
 type ArLogInput = {
   projectId?: string | null;
   mapCode?: string | null;
+  sessionId?: string | null;
+  seq?: number | null;
+  clientTs?: string | null;
   level?: "debug" | "info" | "warn" | "error";
   event?: string;
   message?: string | null;
@@ -35,6 +38,9 @@ function toRow(input: ArLogInput, request: Request) {
   return {
     project_id: input.projectId || null,
     map_code: trimText(input.mapCode),
+    session_id: trimText(input.sessionId),
+    seq: typeof input.seq === "number" && Number.isFinite(input.seq) ? Math.trunc(input.seq) : null,
+    client_ts: trimText(input.clientTs),
     level: input.level ?? "info",
     event,
     message: trimText(input.message),
@@ -72,9 +78,11 @@ async function writeRowsToStorage(rows: ReturnType<typeof toRow>[]) {
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
   const project = slugPart(first.project_id, "no-project");
+  const session = slugPart(first.session_id, "no-session");
+  const seq = typeof first.seq === "number" ? String(first.seq).padStart(6, "0") : "000000";
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   const event = slugPart(first.event, "event");
-  const path = `${project}/${day}/${stamp}-${event}-${crypto.randomUUID()}.jsonl`;
+  const path = `${project}/${day}/${session}/${seq}-${stamp}-${event}.jsonl`;
   const { error } = await supabase.storage.from(bucket).upload(path, jsonl(rows), {
     contentType: "application/x-ndjson",
     upsert: false,
@@ -149,11 +157,13 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const projectId = url.searchParams.get("projectId");
+    const sessionId = url.searchParams.get("sessionId");
     const format = url.searchParams.get("format");
     const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") ?? 100)));
     const supabase = getSupabaseAdmin();
     let query = supabase.from("ar_logs").select("*").order("created_at", { ascending: false }).limit(limit);
     if (projectId) query = query.eq("project_id", projectId);
+    if (sessionId) query = query.eq("session_id", sessionId);
     const { data, error } = await query;
     if (error) throw error;
     if (format === "jsonl" || format === "txt") {

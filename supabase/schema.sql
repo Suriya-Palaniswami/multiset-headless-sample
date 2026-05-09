@@ -42,6 +42,9 @@ create table if not exists ar_logs (
   id uuid primary key default gen_random_uuid(),
   project_id uuid null references projects(id) on delete set null,
   map_code text null,
+  session_id text null,
+  seq integer null,
+  client_ts text null,
   level text not null default 'info' check (level in ('debug', 'info', 'warn', 'error')),
   event text not null,
   message text null,
@@ -53,3 +56,9 @@ create table if not exists ar_logs (
 
 create index if not exists ar_logs_project_id_created_at_idx on ar_logs(project_id, created_at desc);
 create index if not exists ar_logs_created_at_idx on ar_logs(created_at desc);
+
+alter table ar_logs add column if not exists session_id text null;
+alter table ar_logs add column if not exists seq integer null;
+alter table ar_logs add column if not exists client_ts text null;
+
+create index if not exists ar_logs_session_id_seq_idx on ar_logs(session_id, seq);

@@ -207,6 +207,8 @@ The AR page sends crash-adjacent breadcrumbs to **`POST /api/ar-logs`**, which s
 - rows in the Supabase **`ar_logs`** table
 - downloadable `.jsonl` text files in Supabase Storage bucket **`ar-logs`** (or `SUPABASE_AR_LOGS_BUCKET`)
 
+Each browser page load gets a `sessionId`; each event gets a monotonic `seq` and `clientTs`. This keeps repeated test runs from looking like duplicate logs.
+
 Important events include:
 
 - `renderer_initialized`
@@ -226,13 +228,16 @@ Read recent logs from Supabase directly or through:
 ```text
 GET /api/ar-logs?projectId=<uuid>&limit=100
 GET /api/ar-logs?projectId=<uuid>&limit=100&format=jsonl
+GET /api/ar-logs?projectId=<uuid>&sessionId=<session-id>&limit=100&format=jsonl
 ```
 
 In Supabase Storage, download files from:
 
 ```text
-ar-logs/<project-id>/<yyyy-mm-dd>/*.jsonl
+ar-logs/<project-id>/<yyyy-mm-dd>/<session-id>/<seq>-<timestamp>-<event>.jsonl
 ```
+
+Download one `<session-id>` folder when you want to analyze a single AR test attempt.
 
 If `/api/ar-logs` returns `relation "ar_logs" does not exist`, run the latest `supabase/schema.sql` in the Supabase SQL editor. If Storage upload fails, create a private bucket named `ar-logs` in Supabase Storage (the API also tries to create it automatically with the service role key).
 
@@ -282,3 +287,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-09 | **AR diagnostics:** added Supabase-backed `ar_logs` table and `/api/ar-logs` route; AR page sends WebXR/capture/localize/GL context breadcrumbs. |
 | 2026-05-09 | **AR diagnostics:** `/api/ar-logs` also writes downloadable `.jsonl` text files to Supabase Storage bucket `ar-logs`; `GET ...&format=jsonl` returns a downloadable log file. |
 | 2026-05-09 | **AR stability:** safe mode disables `dom-overlay` by default and caps renderer pixel ratio to ≤ 1; screen tap (`select`) still triggers localization in AR. |
+| 2026-05-09 | **AR log management:** added `sessionId`, `seq`, and `clientTs`; Storage logs are grouped by browser session to make repeated test runs easier to download and compare. |

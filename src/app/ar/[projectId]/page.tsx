@@ -66,6 +66,10 @@ export default function ArPage() {
   const [lastResult, setLastResult] = useState<LocalizeResponse | null>(null);
   const [placements, setPlacements] = useState<PlacementWithAsset[]>([]);
   const [logCount, setLogCount] = useState(0);
+  const [logSessionId] = useState(() => {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  });
 
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -75,6 +79,7 @@ export default function ArPage() {
   const xrSessionRef = useRef<XRSession | null>(null);
   const currentMapCodeRef = useRef<string | null>(null);
   const placementsRef = useRef<PlacementWithAsset[]>([]);
+  const logSeqRef = useRef(0);
 
   const pushDebug = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -92,6 +97,9 @@ export default function ArPage() {
         const payload = {
           projectId,
           mapCode: currentMapCodeRef.current,
+          sessionId: logSessionId,
+          seq: ++logSeqRef.current,
+          clientTs: new Date().toISOString(),
           level,
           event,
           message,
@@ -113,7 +121,7 @@ export default function ArPage() {
         setLogCount((n) => n + 1);
       }
     },
-    [projectId]
+    [logSessionId, projectId]
   );
 
   useEffect(() => {
@@ -516,6 +524,9 @@ export default function ArPage() {
           </button>
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">Vanilla WebXR + REST map query</span>
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">logs {logCount}</span>
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-500">
+            session {logSessionId.slice(0, 8)}
+          </span>
         </div>
         {showDebug ? (
           <div className="pointer-events-auto mt-2 w-full max-w-2xl rounded-lg border border-zinc-700/80 bg-black/70 p-3 text-xs text-zinc-200">
