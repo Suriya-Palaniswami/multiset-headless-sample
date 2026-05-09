@@ -295,3 +295,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-09 | **AR runtime scope:** documented the CEO-approved split: vanilla WebXR for XR/session/tracking and Three.js only for rendering/editor-authored placements. |
 | 2026-05-09 | **AR runtime:** replaced Three's `WebXRManager` session/render loop with a raw WebXR `XRWebGLLayer` + `session.requestAnimationFrame` loop; Three now only renders each XR view. |
 | 2026-05-09 | **AR UX:** added a Three-rendered in-XR status HUD, clearer loading/localizing messages, full-viewport canvas layout, and wider XR depth range to reduce clipping. |
+| 2026-05-09 | **AR viewport:** XR framebuffer viewports are now rendered with Three pixel ratio forced to `1` during immersive AR, preventing the scene from being scaled into the lower-left of the display. |

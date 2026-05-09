@@ -411,6 +411,8 @@ export default function ArPage() {
 
       const gl = renderer.getContext();
       camera.matrixAutoUpdate = false;
+      renderer.setPixelRatio(1);
+      renderer.setSize(baseLayer.framebufferWidth, baseLayer.framebufferHeight, false);
 
       const onFrame: XRFrameRequestCallback = (_time, frame) => {
         xrFrameIdRef.current = session.requestAnimationFrame(onFrame);
@@ -438,7 +440,21 @@ export default function ArPage() {
         if (!xrFirstFrameLoggedRef.current) {
           xrFirstFrameLoggedRef.current = true;
           setStatusState("AR camera ready — tap screen to localize.", "ready");
-          arLog("xr_first_frame", { views: pose.views.length }, "debug");
+          const viewports = pose.views.flatMap((view) => {
+            const viewport = baseLayer.getViewport(view);
+            return viewport
+              ? [{ x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height }]
+              : [];
+          });
+          arLog(
+            "xr_first_frame",
+            {
+              views: pose.views.length,
+              framebuffer: { width: baseLayer.framebufferWidth, height: baseLayer.framebufferHeight },
+              viewports,
+            },
+            "debug"
+          );
         }
       };
 
@@ -503,6 +519,9 @@ export default function ArPage() {
           session.cancelAnimationFrame(xrFrameIdRef.current);
           xrFrameIdRef.current = null;
         }
+        const host = canvasHostRef.current;
+        renderer.setPixelRatio(arPixelRatio());
+        renderer.setSize(Math.max(1, host?.clientWidth || window.innerWidth), Math.max(1, host?.clientHeight || window.innerHeight), false);
         xrSessionRef.current = null;
         xrReferenceSpaceRef.current = null;
         setSessionActive(false);
