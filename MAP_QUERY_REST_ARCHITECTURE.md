@@ -110,9 +110,9 @@ This is an **engineering estimate**, not a physical calibration. For production 
 
 Multiply **`fx`, `fy`, `px`, `py`** by the **uniform scale factor** \(s\) from original → resized (same as we did for WebXR in `xrCapture.ts`). **Always** tie intrinsics to the **JPEG you send**.
 
-### WebXR / `camera-access` (optional legacy path)
+### WebXR / `camera-access` (current AR path)
 
-`src/lib/ar/xrCapture.ts` still contains helpers to derive intrinsics from **WebXR projection matrix** and **`readPixels`** from the XR camera texture. That path is **not** used by the current AR page but is useful if you resume immersive capture.
+`src/lib/ar/xrCapture.ts` derives intrinsics from **WebXR projection matrix** and uses **`readPixels`** from the XR camera texture. This is how the current AR page captures the localization frame while keeping localization on Multiset REST.
 
 ---
 
@@ -168,8 +168,9 @@ The route **repacks** this into **`FormData`** for `query-form`. **Do not** hand
 **File:** `src/app/ar/[projectId]/page.tsx`
 
 - Loads **project** → **`map_code`**, placements, asset URLs from this app’s APIs.
-- Starts a minimal **vanilla WebXR** `immersive-ar` session. WebXR is used only for local tracking/rendering and camera texture access; **localization remains REST**.
-- Safe mode defaults: **no `dom-overlay`** in `requestSession` and renderer pixel ratio capped to **≤ 1**. Set `NEXT_PUBLIC_AR_DOM_OVERLAY=true` only when debugging overlay UI inside XR; set `NEXT_PUBLIC_AR_PIXEL_RATIO` to tune framebuffer pressure.
+- Starts a minimal **vanilla WebXR** `immersive-ar` session through `navigator.xr`; WebXR owns session lifecycle, local tracking, select events, and camera texture access.
+- Uses **Three.js only as the renderer/scene graph** for authored placements. The AR runtime does not use React Three Fiber, `@react-three/xr`, the Multiset WebXR SDK, or Three's `XRButton` session helpers.
+- Safe mode defaults: **no `dom-overlay`** in `requestSession`, renderer pixel ratio capped to **≤ 1**, and WebXR framebuffer scale capped by `NEXT_PUBLIC_AR_FRAMEBUFFER_SCALE` (default `0.5`). Set `NEXT_PUBLIC_AR_DOM_OVERLAY=true` only when debugging overlay UI inside XR.
 - On **Localize**, `src/lib/ar/xrCapture.ts` reads the WebXR camera texture, derives intrinsics from `XRView.projectionMatrix`, downscales the JPEG so max side ≤ **1280**, and sends it to **`/api/localize`**.
 - Multiset REST returns **`T_map_camera`** (`position` + `rotation` in map space). WebXR provides **`T_world_camera`** for the exact captured frame. We solve:
 
@@ -289,3 +290,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-09 | **AR stability:** safe mode disables `dom-overlay` by default and caps renderer pixel ratio to ≤ 1; screen tap (`select`) still triggers localization in AR. |
 | 2026-05-09 | **AR log management:** added `sessionId`, `seq`, and `clientTs`; Storage logs are grouped by browser session to make repeated test runs easier to download and compare. |
 | 2026-05-09 | **AR stability:** capped WebXR framebuffer scale with `NEXT_PUBLIC_AR_FRAMEBUFFER_SCALE` (default `0.5`) because logs show crashes after WebXR session start but before REST localization. |
+| 2026-05-09 | **AR runtime scope:** documented the CEO-approved split: vanilla WebXR for XR/session/tracking and Three.js only for rendering/editor-authored placements. |

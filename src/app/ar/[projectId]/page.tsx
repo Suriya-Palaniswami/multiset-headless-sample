@@ -239,6 +239,7 @@ export default function ArPage() {
       powerPreference: "low-power",
       stencil: false,
     });
+    // WebXR session/tracking stays explicit via navigator.xr; Three only owns scene rendering.
     renderer.xr.enabled = true;
     renderer.setClearColor(0x000000, 0);
     const pixelRatio = arPixelRatio();
@@ -531,7 +532,9 @@ export default function ArPage() {
           >
             {showDebug ? "Hide log" : "Show log"}
           </button>
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">Vanilla WebXR + REST map query</span>
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+            Vanilla WebXR + Three render + REST map query
+          </span>
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">logs {logCount}</span>
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-500">
             session {logSessionId.slice(0, 8)}
