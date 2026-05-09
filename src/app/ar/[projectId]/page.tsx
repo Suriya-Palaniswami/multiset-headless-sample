@@ -56,6 +56,49 @@ function disposeObject(root: THREE.Object3D) {
 
 const assetCache = new Map<string, THREE.Object3D>();
 
+type HudState = "idle" | "starting" | "ready" | "localizing" | "localized" | "error";
+
+function hudColor(state: HudState): number {
+  switch (state) {
+    case "starting":
+      return 0xf59e0b;
+    case "ready":
+      return 0x60a5fa;
+    case "localizing":
+      return 0xfacc15;
+    case "localized":
+      return 0x22c55e;
+    case "error":
+      return 0xef4444;
+    default:
+      return 0x71717a;
+  }
+}
+
+function createHud() {
+  const group = new THREE.Group();
+  group.name = "cameraHud";
+  group.visible = false;
+  group.position.set(0, -0.22, -1.15);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.028, 0.041, 48),
+    new THREE.MeshBasicMaterial({ color: hudColor("idle"), transparent: true, opacity: 0.95, side: THREE.DoubleSide })
+  );
+  ring.name = "statusRing";
+  group.add(ring);
+
+  const bar = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.26, 0.012),
+    new THREE.MeshBasicMaterial({ color: hudColor("idle"), transparent: true, opacity: 0.75, side: THREE.DoubleSide })
+  );
+  bar.name = "statusBar";
+  bar.position.set(0, -0.065, 0);
+  group.add(bar);
+
+  return group;
+}
+
 export default function ArPage() {
   const params = useParams();
   const projectId = String(params.projectId ?? "");
@@ -80,6 +123,7 @@ export default function ArPage() {
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const hudRef = useRef<THREE.Group | null>(null);
   const mapRootRef = useRef<THREE.Group | null>(null);
   const placedRootRef = useRef<THREE.Group | null>(null);
   const xrSessionRef = useRef<XRSession | null>(null);
@@ -93,6 +137,19 @@ export default function ArPage() {
   const pushDebug = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
     setDebugLines((prev) => [`[${stamp}] ${line}`, ...prev].slice(0, 24));
+  }, []);
+
+  const setStatusState = useCallback((message: string, hudState: HudState = "idle") => {
+    setStatus(message);
+    const hud = hudRef.current;
+    if (!hud) return;
+    hud.visible = hudState !== "idle";
+    hud.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      const material = mesh.material as THREE.MeshBasicMaterial | undefined;
+      if (!mesh.isMesh || !material?.color) return;
+      material.color.setHex(hudColor(hudState));
+    });
   }, []);
 
   const arLog = useCallback(
@@ -189,17 +246,17 @@ export default function ArPage() {
           placementsRef.current = view;
         }
 
-        setStatus(proj.map_code ? "Start AR, then tap Localize." : "Project has no map code.");
+        setStatusState(proj.map_code ? "Start AR, then tap Localize." : "Project has no map code.");
       } catch (e) {
         if (!cancelled) {
-          setStatus(e instanceof Error ? e.message : "Failed to load project");
+          setStatusState(e instanceof Error ? e.message : "Failed to load project", "error");
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, setStatusState]);
 
   useEffect(() => {
     const host = canvasHostRef.current;
@@ -234,6 +291,10 @@ export default function ArPage() {
 
     const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 8000);
     cameraRef.current = camera;
+    scene.add(camera);
+    const hud = createHud();
+    hudRef.current = hud;
+    camera.add(hud);
 
     const renderer = new THREE.WebGLRenderer({
       canvas,
@@ -294,6 +355,7 @@ export default function ArPage() {
       rendererRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
+      hudRef.current = null;
       mapRootRef.current = null;
       placedRootRef.current = null;
       canvas.removeEventListener("webglcontextlost", onContextLost, false);
@@ -375,6 +437,7 @@ export default function ArPage() {
         renderer.setScissorTest(false);
         if (!xrFirstFrameLoggedRef.current) {
           xrFirstFrameLoggedRef.current = true;
+          setStatusState("AR camera ready — tap screen to localize.", "ready");
           arLog("xr_first_frame", { views: pose.views.length }, "debug");
         }
       };
@@ -382,7 +445,7 @@ export default function ArPage() {
       xrFirstFrameLoggedRef.current = false;
       xrFrameIdRef.current = session.requestAnimationFrame(onFrame);
     },
-    [arLog]
+    [arLog, setStatusState]
   );
 
   const startAr = useCallback(async () => {
@@ -393,9 +456,10 @@ export default function ArPage() {
       dpr: window.devicePixelRatio || 1,
       viewport: { width: window.innerWidth, height: window.innerHeight },
     });
+    setStatusState("Starting AR camera…", "starting");
     const xr = navigator.xr;
     if (!xr) {
-      setStatus("WebXR is not available in this browser.");
+      setStatusState("WebXR is not available in this browser.", "error");
       arLog("webxr_unavailable", undefined, "warn");
       return;
     }
@@ -405,7 +469,7 @@ export default function ArPage() {
       const supported = await xr.isSessionSupported("immersive-ar");
       arLog("immersive_ar_support_checked", { supported });
       if (!supported) {
-        setStatus("Immersive AR is not supported on this device/browser.");
+        setStatusState("Immersive AR is not supported on this device/browser.", "error");
         return;
       }
 
@@ -431,7 +495,7 @@ export default function ArPage() {
         framebufferScaleFactor: framebufferScale,
         ignoreDepthValues: true,
       });
-      session.updateRenderState({ baseLayer });
+      session.updateRenderState({ baseLayer, depthNear: 0.01, depthFar: 10000 });
       const refSpace = await session.requestReferenceSpace("local");
 
       session.addEventListener("end", () => {
@@ -442,7 +506,7 @@ export default function ArPage() {
         xrSessionRef.current = null;
         xrReferenceSpaceRef.current = null;
         setSessionActive(false);
-        setStatus("AR session ended.");
+        setStatusState("AR session ended.");
         if (mapRootRef.current) mapRootRef.current.visible = false;
       });
       session.addEventListener("select", () => {
@@ -454,7 +518,7 @@ export default function ArPage() {
       startXrRenderLoop(session, refSpace, baseLayer);
       setSessionActive(true);
       const overlay = arUseDomOverlay();
-      setStatus(overlay ? "AR active — tap Localize." : "AR active — tap screen to localize (overlay disabled).");
+      setStatusState(overlay ? "AR active — tap Localize." : "AR active — tap screen to localize.", "ready");
       pushDebug("WebXR session started (REST localization is still server/API based).");
       arLog("webxr_session_started", {
         baseLayer: Boolean(session.renderState.baseLayer),
@@ -463,12 +527,12 @@ export default function ArPage() {
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Camera permission failed";
-      setStatus(msg);
+      setStatusState(msg, "error");
       pushDebug(msg);
       arLog("start_ar_error", { error: msg }, "error");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [arLog, pushDebug, startXrRenderLoop]);
+  }, [arLog, pushDebug, setStatusState, startXrRenderLoop]);
 
   const localize = useCallback(async () => {
     const renderer = rendererRef.current;
@@ -476,13 +540,13 @@ export default function ArPage() {
     const mapCode = currentMapCodeRef.current;
     if (!mapCode || busy) return;
     if (!renderer || !session) {
-      setStatus("Start AR first.");
+      setStatusState("Start AR first.");
       return;
     }
 
     const refSpace = xrReferenceSpaceRef.current;
     if (!refSpace) {
-      setStatus("WebXR reference space not ready.");
+      setStatusState("WebXR reference space not ready.", "error");
       return;
     }
 
@@ -490,14 +554,16 @@ export default function ArPage() {
     setConfidence(null);
     setLastResult(null);
     try {
+      setStatusState("Capturing XR camera frame…", "localizing");
       arLog("localize_start", { poseMode: localizePoseAlignment() });
       const capture = await captureFrameForLocalization(renderer, session, refSpace, 1280);
       if (!capture) {
-        setStatus("Could not capture XR camera frame. Check camera-access support.");
+        setStatusState("Could not capture XR camera frame. Check camera-access support.", "error");
         pushDebug("XR capture failed: no camera texture or viewer pose.");
         arLog("xr_capture_failed", undefined, "warn");
         return;
       }
+      setStatusState("Sending frame to Multiset REST…", "localizing");
 
       pushDebug(
         `REST query image ${capture.intrinsics.width}x${capture.intrinsics.height} ` +
@@ -526,7 +592,7 @@ export default function ArPage() {
       const res = await apiFetch("/api/localize", { method: "POST", body: fd });
       const text = await res.text();
       if (!res.ok) {
-        setStatus(`Localize failed (${res.status})`);
+        setStatusState(`Localize failed (${res.status})`, "error");
         pushDebug(text.slice(0, 400));
         arLog("rest_localize_error", { status: res.status, body: text.slice(0, 1000) }, "error");
         return;
@@ -535,7 +601,7 @@ export default function ArPage() {
       try {
         parsed = JSON.parse(text) as LocalizeResponse;
       } catch {
-        setStatus("Invalid JSON from server");
+        setStatusState("Invalid JSON from server", "error");
         arLog("rest_localize_invalid_json", { body: text.slice(0, 1000) }, "error");
         return;
       }
@@ -560,7 +626,7 @@ export default function ArPage() {
           mapRoot.visible = true;
           mapRoot.updateMatrixWorld(true);
         }
-        setStatus(`Localized — conf ${(c ?? 0).toFixed(3)} (mapRoot aligned)`);
+        setStatusState(`Localized — conf ${(c ?? 0).toFixed(3)} (mapRoot aligned)`, "localized");
         pushDebug(`poseFound=${parsed.poseFound} align=${align} mapCodes=${JSON.stringify(parsed.mapCodes)}`);
         arLog("maproot_aligned", {
           align,
@@ -573,17 +639,17 @@ export default function ArPage() {
           rendererInfo: renderer.info,
         });
       } else {
-        setStatus("No pose for this frame — try aim, lighting, or another angle.");
+        setStatusState("No pose for this frame — try aim, lighting, or another angle.", "error");
         pushDebug("poseFound=false");
       }
     } finally {
       setBusy(false);
     }
-  }, [arLog, busy, loadPlacementsIntoMapRoot, pushDebug]);
+  }, [arLog, busy, loadPlacementsIntoMapRoot, pushDebug, setStatusState]);
 
   return (
-    <div ref={rootRef} className="relative min-h-screen bg-zinc-950">
-      <div className="relative z-30 border-b border-zinc-800/80 bg-zinc-950/90 px-3 py-2 backdrop-blur-sm">
+    <div ref={rootRef} className="fixed inset-0 overflow-hidden bg-zinc-950">
+      <div className="absolute left-0 right-0 top-0 z-30 border-b border-zinc-800/80 bg-zinc-950/90 px-3 py-2 backdrop-blur-sm">
         <div className="pointer-events-auto flex flex-wrap items-center gap-3">
           <Link href={`/editor/${projectId}`} className="text-sm text-violet-400 hover:underline">
             ← Editor
@@ -623,9 +689,9 @@ export default function ArPage() {
         ) : null}
       </div>
 
-      <div className="relative min-h-[calc(100vh-56px)]">
+      <div className="absolute inset-0">
         <div ref={canvasHostRef} className="absolute inset-0 bg-black" />
-        <div className="pointer-events-none absolute inset-0 z-20 flex flex-col p-3">
+        <div className="pointer-events-none absolute inset-0 z-20 flex flex-col p-3 pt-16">
           <div className="pointer-events-auto max-w-xl rounded-lg bg-black/65 p-3 text-sm text-zinc-200 backdrop-blur">
             <p>
               Multiset localization is still <strong>REST</strong>: WebXR only supplies the local tracking pose
@@ -635,7 +701,7 @@ export default function ArPage() {
               <p className="mt-2 text-amber-200/90">No placements in this project — add objects in the editor first.</p>
             ) : null}
           </div>
-          <div className="pointer-events-auto mt-auto flex flex-wrap items-center justify-center gap-2 pb-8">
+          <div className="pointer-events-auto mt-auto flex flex-wrap items-center justify-center gap-2 pb-16">
             <button
               type="button"
               onClick={() => void startAr()}

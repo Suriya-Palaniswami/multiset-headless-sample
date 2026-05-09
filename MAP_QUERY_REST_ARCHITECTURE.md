@@ -171,6 +171,8 @@ The route **repacks** this into **`FormData`** for `query-form`. **Do not** hand
 - Starts a minimal **vanilla WebXR** `immersive-ar` session through `navigator.xr`; WebXR owns session lifecycle, `XRWebGLLayer`, reference space, frame loop, local tracking, select events, and camera texture access.
 - Uses **Three.js only as the renderer/scene graph** for authored placements. The AR runtime does not use React Three Fiber, `@react-three/xr`, the Multiset WebXR SDK, Three's `XRButton`, or Three's `WebXRManager` session loop.
 - Safe mode defaults: **no `dom-overlay`** in `requestSession`, renderer pixel ratio capped to **≤ 1**, and WebXR framebuffer scale capped by `NEXT_PUBLIC_AR_FRAMEBUFFER_SCALE` (default `0.5`). Set `NEXT_PUBLIC_AR_DOM_OVERLAY=true` only when debugging overlay UI inside XR.
+- Because DOM overlays are disabled by default, the immersive AR view includes a small Three-rendered HUD indicator: blue = ready, yellow = localizing, green = localized, red = error.
+- The page canvas uses the full viewport, and XR render state uses a wider depth range (`0.01` → `10000`) to reduce placement clipping.
 - On **Localize**, `src/lib/ar/xrCapture.ts` reads the WebXR camera texture, derives intrinsics from `XRView.projectionMatrix`, downscales the JPEG so max side ≤ **1280**, and sends it to **`/api/localize`**.
 - Multiset REST returns **`T_map_camera`** (`position` + `rotation` in map space). WebXR provides **`T_world_camera`** for the exact captured frame. We solve:
 
@@ -292,3 +294,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-09 | **AR stability:** capped WebXR framebuffer scale with `NEXT_PUBLIC_AR_FRAMEBUFFER_SCALE` (default `0.5`) because logs show crashes after WebXR session start but before REST localization. |
 | 2026-05-09 | **AR runtime scope:** documented the CEO-approved split: vanilla WebXR for XR/session/tracking and Three.js only for rendering/editor-authored placements. |
 | 2026-05-09 | **AR runtime:** replaced Three's `WebXRManager` session/render loop with a raw WebXR `XRWebGLLayer` + `session.requestAnimationFrame` loop; Three now only renders each XR view. |
+| 2026-05-09 | **AR UX:** added a Three-rendered in-XR status HUD, clearer loading/localizing messages, full-viewport canvas layout, and wider XR depth range to reduce clipping. |
