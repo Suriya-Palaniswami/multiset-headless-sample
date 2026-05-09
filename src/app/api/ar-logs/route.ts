@@ -76,28 +76,69 @@ async function writeRowsToStorage(rows: ReturnType<typeof toRow>[]) {
   const event = slugPart(first.event, "event");
   const path = `${project}/${day}/${stamp}-${event}-${crypto.randomUUID()}.jsonl`;
   const { error } = await supabase.storage.from(bucket).upload(path, jsonl(rows), {
-    contentType: "application/x-ndjson; charset=utf-8",
+    contentType: "application/x-ndjson",
     upsert: false,
   });
   if (error) throw error;
+  return path;
+}
+
+async function parseLogBody(request: Request): Promise<ArLogInput | { logs?: ArLogInput[] }> {
+  const text = await request.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text) as ArLogInput | { logs?: ArLogInput[] };
+  } catch {
+    return {
+      level: "error",
+      event: "ar_log_parse_error",
+      message: "Could not parse AR log request body as JSON",
+      data: { bodyPreview: text.slice(0, 1000), contentType: request.headers.get("content-type") },
+    };
+  }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as ArLogInput | { logs?: ArLogInput[] };
+    const body = await parseLogBody(request);
     const rawLogs = Array.isArray((body as { logs?: ArLogInput[] }).logs)
       ? (body as { logs: ArLogInput[] }).logs
       : [body as ArLogInput];
     const rows = rawLogs.slice(0, MAX_LOGS_PER_REQUEST).map((log) => toRow(log, request));
     const supabase = getSupabaseAdmin();
-    const { error } = await supabase.from("ar_logs").insert(rows);
-    if (error) throw error;
+    let storagePath: string | undefined;
+    let storageErrorMessage: string | undefined;
+    let tableErrorMessage: string | undefined;
+
     try {
-      await writeRowsToStorage(rows);
+      storagePath = await writeRowsToStorage(rows);
     } catch (storageError) {
       console.error("Failed to write AR logs to storage", storageError);
+      storageErrorMessage = storageError instanceof Error ? storageError.message : String(storageError);
     }
-    return NextResponse.json({ ok: true, count: rows.length });
+
+    try {
+      const { error } = await supabase.from("ar_logs").insert(rows);
+      if (error) throw error;
+    } catch (tableError) {
+      console.error("Failed to insert AR logs into table", tableError);
+      tableErrorMessage = tableError instanceof Error ? tableError.message : String(tableError);
+    }
+
+    if (storageErrorMessage && tableErrorMessage) {
+      return NextResponse.json(
+        { ok: false, count: rows.length, storageError: storageErrorMessage, tableError: tableErrorMessage },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      ok: true,
+      count: rows.length,
+      storagePath,
+      tableWarning: tableErrorMessage,
+      storageWarning: storageErrorMessage,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
     return NextResponse.json({ error: msg }, { status: 500 });

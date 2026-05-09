@@ -55,6 +55,7 @@ export default function ArPage() {
   const [mapCode, setMapCode] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<LocalizeResponse | null>(null);
   const [placements, setPlacements] = useState<PlacementWithAsset[]>([]);
+  const [logCount, setLogCount] = useState(0);
 
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -98,6 +99,8 @@ export default function ArPage() {
         });
       } catch {
         // Logging must never affect AR behavior.
+      } finally {
+        setLogCount((n) => n + 1);
       }
     },
     [projectId]
@@ -500,6 +503,7 @@ export default function ArPage() {
             {showDebug ? "Hide log" : "Show log"}
           </button>
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">Vanilla WebXR + REST map query</span>
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">logs {logCount}</span>
         </div>
         {showDebug ? (
           <div className="pointer-events-auto mt-2 w-full max-w-2xl rounded-lg border border-zinc-700/80 bg-black/70 p-3 text-xs text-zinc-200">
