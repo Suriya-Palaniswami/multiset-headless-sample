@@ -1,9 +1,10 @@
 "use client";
 
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
-import { Suspense, useLayoutEffect, useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import * as THREE from "three";
+import { buildMapCameraMatrix, type ArAlignMode } from "@/lib/ar/mapPose";
 import type { LocalizeResponse } from "@/lib/types";
 import type { PlacementWithAsset } from "@/components/EditorCanvas";
 
@@ -11,20 +12,37 @@ export function verticalFovFromFy(height: number, fy: number): number {
   return (2 * Math.atan(height / (2 * fy)) * 180) / Math.PI;
 }
 
+/** R3F can re-apply the Canvas `camera` prop each render — that reset our pose. Sync every frame. */
+function localizePoseAlignment(): ArAlignMode {
+  const raw = process.env.NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE?.trim();
+  if (raw === "direct" || raw === "unity" || raw === "lhsReflection" || raw === "invMapCam") return raw;
+  /**
+   * Default `direct`: same numeric frame as multiset map mesh + editor placements (raw API → Three).
+   * If objects sit wrong vs the room while the camera pose is stable, try `NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE=unity`.
+   */
+  return "direct";
+}
+
 function SyncCamera({ result, fovDeg }: { result: LocalizeResponse; fovDeg: number }) {
   const { camera } = useThree();
-  useLayoutEffect(() => {
-    const pos = result.position;
-    const rot = result.rotation;
-    if (!pos || !rot) return;
+  const align = localizePoseAlignment();
+  useFrame(() => {
     const c = camera as THREE.PerspectiveCamera;
-    c.position.set(pos.x, pos.y, pos.z);
-    c.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+    const T = buildMapCameraMatrix(result, align);
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
+    T.decompose(pos, quat, scl);
+    c.position.copy(pos);
+    c.quaternion.copy(quat);
     c.near = 0.05;
     c.far = 8000;
-    c.fov = fovDeg;
-    c.updateProjectionMatrix();
-  }, [camera, result, fovDeg]);
+    if (Math.abs(c.fov - fovDeg) > 1e-6) {
+      c.fov = fovDeg;
+      c.updateProjectionMatrix();
+    }
+    c.matrixWorldNeedsUpdate = true;
+  });
   return null;
 }
 
@@ -65,10 +83,15 @@ export function ArPlacementOverlay({ localizeResult, placements, queryHeight, fy
       <Canvas
         className="h-full w-full"
         gl={{ alpha: true, antialias: true, powerPreference: "low-power" }}
-        camera={{ fov: fovDeg, near: 0.05, far: 8000, position: [0, 1.5, 0] }}
-        onCreated={({ gl, scene }) => {
+        /** Do not pass `camera` props here — React Three Fiber reapplies them and clears localized pose each render. */
+        onCreated={({ gl, scene, camera }) => {
           scene.background = null;
           gl.setClearColor(0x000000, 0);
+          const c = camera as THREE.PerspectiveCamera;
+          c.near = 0.05;
+          c.far = 8000;
+          c.fov = fovDeg;
+          c.updateProjectionMatrix();
         }}
       >
         <SyncCamera result={localizeResult} fovDeg={fovDeg} />
