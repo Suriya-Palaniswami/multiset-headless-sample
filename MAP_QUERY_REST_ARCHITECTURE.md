@@ -171,7 +171,7 @@ The route **repacks** this into **`FormData`** for `query-form`. **Do not** hand
 - **`getUserMedia`** with `facingMode: ideal "environment"` (rear camera on phones).
 - On **Localize**, grabs one video frame → downscale → JPEG → **`/api/localize`**.
 - After a **`poseFound`** result, **`ArPlacementOverlay`** (`src/components/ArPlacementOverlay.tsx`) draws placement GLBs in **map coordinates** using a Three.js camera at the localized **position/quaternion** (`buildMapCameraMatrix` in `src/lib/ar/mapPose.ts`). The canvas is **transparent** over the live video preview.
-- **Important (R3F):** do not pass a `camera={{ position: … }}` object to `<Canvas>` while also setting the camera from localization — React Three Fiber reapplies that prop on parent re-renders and **was resetting the pose every frame**, making content look **stuck to the screen / camera**. Pose is synced with **`useFrame`**, and FOV is initialized in `onCreated`.
+- **Implementation note:** `ArPlacementOverlay` uses **plain Three.js** (`WebGLRenderer` + `requestAnimationFrame`), not React Three Fiber. Multiset’s **`examples/vanilla`** flow is the same idea (no React wrappers); **Three is still typical for GLBs.** If content still visually “sticks” when you physically rotate the phone, that matches **snapshot REST** localize (below) unless you add **orientation**, **WebXR tracking**, or **multi-image** VPS.
 - **Alignment:** `NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE` selects `direct` (default, same frame as raw API + editor mesh) vs `unity` / `invMapCam` / etc. if your map uses different handedness.
 - This is still a **single-frame snapshot**: rotating the physical phone does **not** update the overlay until you **Localize** again — there is no continuous SLAM in REST-only mode. True “sticky” AR needs WebXR/ARKit style tracking plus repeated queries or fusion.
 
@@ -228,3 +228,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-07 | JSON body path for `/api/localize`: `isRightHanded` default changed to **`true`** (omit field to match browser defaults). |
 | 2026-05-09 | **`GET .../mesh`**: proxy Multiset map GLB for editor (**CORS**). **AR overlay:** `ArPlacementOverlay` shows placements after REST localize (**snapshot**, not persistent AR). |
 | 2026-05-09 | **AR overlay pose bugfix:** avoid R3F `camera` prop reset; apply localized camera in **`useFrame`**; optional `NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE`. |
+| 2026-05-09 | **AR overlay:** rewritten as **plain Three.js** (no R3F) for Multiset-style “vanilla” rendering stack. |
