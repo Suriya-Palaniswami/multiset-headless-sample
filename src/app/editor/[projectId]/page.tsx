@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiUrl } from "@/lib/api";
 import type { AssetRow, PlacementRow, ProjectRow } from "@/lib/types";
 import { useEditorStore } from "@/lib/editorStore";
 import type { PlacementWithAsset } from "@/components/EditorCanvas";
@@ -54,13 +54,8 @@ export default function EditorPage() {
       if (status !== "active") {
         setMeshUrl(null);
       } else {
-        const urlRes = await apiFetch(`/api/maps/${encodeURIComponent(p.map_code)}/download-mesh-url`);
-        if (urlRes.ok) {
-          const { url } = (await urlRes.json()) as { url: string };
-          setMeshUrl(url);
-        } else {
-          setMeshUrl(null);
-        }
+        /** Same-origin GLB proxy — avoids CORS on Multiset S3 presigned URLs in the browser */
+        setMeshUrl(apiUrl(`/api/maps/${encodeURIComponent(p.map_code)}/mesh`));
       }
 
       const plRes = await apiFetch(`/api/projects/${projectId}/placements`);

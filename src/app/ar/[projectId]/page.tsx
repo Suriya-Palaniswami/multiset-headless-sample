@@ -1,8 +1,10 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { PlacementWithAsset } from "@/components/EditorCanvas";
 import { apiFetch } from "@/lib/api";
 import {
   MAX_QUERY_IMAGE_DIMENSION,
@@ -10,7 +12,18 @@ import {
   startRearCamera,
   stopMediaStream,
 } from "@/lib/ar/webcamCapture";
-import type { LocalizeResponse, ProjectRow } from "@/lib/types";
+import type { AssetRow, LocalizeResponse, PlacementRow, ProjectRow } from "@/lib/types";
+
+const ArPlacementOverlay = dynamic(
+  () => import("@/components/ArPlacementOverlay").then((m) => ({ default: m.ArPlacementOverlay })),
+  { ssr: false }
+);
+
+function placementToView(p: PlacementRow, assets: Map<string, AssetRow>): PlacementWithAsset | null {
+  const a = assets.get(p.asset_id);
+  if (!a) return null;
+  return { ...p, public_url: a.public_url };
+}
 
 function cameraVerticalFov(): number {
   const raw = process.env.NEXT_PUBLIC_CAMERA_VERTICAL_FOV?.trim();
@@ -19,10 +32,6 @@ function cameraVerticalFov(): number {
   return 60;
 }
 
-/**
- * Matches Multiset VPS Web samples / SDK default for form query (`isRightHanded: true`).
- * If you consume poses in Three.js RHS, see MAP_QUERY_REST_ARCHITECTURE.md for conversions.
- */
 function queryIsRightHanded(): boolean {
   return process.env.NEXT_PUBLIC_VPS_IS_RIGHT_HANDED !== "false";
 }
@@ -40,6 +49,8 @@ export default function ArPage() {
   const [busy, setBusy] = useState(false);
   const [mapCode, setMapCode] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<LocalizeResponse | null>(null);
+  const [queryFrame, setQueryFrame] = useState<{ h: number; fy: number } | null>(null);
+  const [placements, setPlacements] = useState<PlacementWithAsset[]>([]);
 
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -58,6 +69,23 @@ export default function ArPage() {
         const proj = (await pr.json()) as ProjectRow;
         if (cancelled) return;
         setMapCode(proj.map_code);
+
+        const plRes = await apiFetch(`/api/projects/${projectId}/placements`);
+        if (!plRes.ok) throw new Error(await plRes.text());
+        const plRows = (await plRes.json()) as PlacementRow[];
+
+        const assetsRes = await apiFetch("/api/assets");
+        if (!assetsRes.ok) throw new Error(await assetsRes.text());
+        const assetRows = (await assetsRes.json()) as AssetRow[];
+        const assetMap = new Map(assetRows.map((a) => [a.id, a]));
+
+        const view: PlacementWithAsset[] = [];
+        for (const row of plRows) {
+          const v = placementToView(row, assetMap);
+          if (v) view.push(v);
+        }
+        if (!cancelled) setPlacements(view);
+
         setStatus(proj.map_code ? "Allow camera, then tap Localize." : "Project has no map code.");
       } catch (e) {
         if (!cancelled) {
@@ -105,6 +133,7 @@ export default function ArPage() {
     setBusy(true);
     setConfidence(null);
     setLastResult(null);
+    setQueryFrame(null);
     try {
       const ok = await ensureCamera();
       if (!ok) return;
@@ -152,7 +181,8 @@ export default function ArPage() {
       const c = parsed.confidence ?? null;
       setConfidence(c);
       if (parsed.poseFound) {
-        setStatus(`Localized — conf ${(c ?? 0).toFixed(3)}`);
+        setQueryFrame({ h: frame.height, fy: frame.intrinsics.fy });
+        setStatus(`Localized — conf ${(c ?? 0).toFixed(3)} (snapshot overlay)`);
         pushDebug(`poseFound mapCodes=${JSON.stringify(parsed.mapCodes)}`);
       } else {
         setStatus("No pose for this frame — try aim, lighting, or another angle.");
@@ -162,6 +192,11 @@ export default function ArPage() {
       setBusy(false);
     }
   }
+
+  const overlayPayload =
+    lastResult?.poseFound && lastResult.position && lastResult.rotation && queryFrame && placements.length > 0
+      ? { result: lastResult, qf: queryFrame }
+      : null;
 
   return (
     <div className="relative min-h-screen bg-zinc-950">
@@ -201,10 +236,11 @@ export default function ArPage() {
 
       <div className="relative mx-auto flex max-w-lg flex-col gap-3 p-3">
         <p className="text-sm text-zinc-400">
-          Live camera → single JPEG frame → server <code className="text-zinc-300">/api/localize</code> → Multiset{" "}
-          <code className="text-zinc-300">query-form</code>. See{" "}
-          <code className="text-zinc-300">MAP_QUERY_REST_ARCHITECTURE.md</code>.
+          After <strong className="text-zinc-200">Localized</strong>, placed GLBs render as a transparent <strong className="text-zinc-200">snapshot</strong> from your last pose (same map coordinates as the editor). Move the phone and the overlay will drift until you localize again — there is no continuous tracking in REST-only mode.
         </p>
+        {placements.length === 0 ? (
+          <p className="text-sm text-amber-200/90">No placements in this project — add objects in the editor first.</p>
+        ) : null}
         <div className="relative aspect-[3/4] w-full overflow-hidden rounded-xl border border-zinc-700 bg-black">
           <video
             ref={videoRef}
@@ -215,6 +251,14 @@ export default function ArPage() {
             controls={false}
           />
           <canvas ref={canvasRef} className="hidden" />
+          {overlayPayload ? (
+            <ArPlacementOverlay
+              localizeResult={overlayPayload.result}
+              placements={placements}
+              queryHeight={overlayPayload.qf.h}
+              fy={overlayPayload.qf.fy}
+            />
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-zinc-300">{status}</span>

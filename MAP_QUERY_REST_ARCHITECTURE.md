@@ -1,6 +1,6 @@
 # Multiset map query (REST) — architecture & reference
 
-**Last updated:** 2026-05-07  
+**Last updated:** 2026-05-09  
 
 This document describes how this sample uses **Multiset’s VPS REST APIs** for localization (map query) with **camera frames** or **offline video frames**, without the WebXR NPM SDK. It is meant to stay in sync with implementation details you need for scripts (resolution, intrinsics, endpoints, coordinates).
 
@@ -14,7 +14,7 @@ This document describes how this sample uses **Multiset’s VPS REST APIs** for 
 |----------|-----------------------------------|
 | Single-image **form-data** query (`query-form`) via our **server proxy** | Raw browser → `api.multiset.ai` with client secret (never ship secrets to the client) |
 | Max **1280 px** long edge, JPEG encoding, intrinsics matching the encoded image | Multi-image query API (4–6 images + SLAM poses) — summarized below for reference only |
-| Auth:** M2M bearer token on the server | Geo / floor hints (`hintPosition`, `hintFloorHeight`) — supported by API; wire when needed |
+| **Auth:** M2M bearer token on the server | Geo / floor hints (`hintPosition`, `hintFloorHeight`) — supported by API; wire when needed |
 
 ---
 
@@ -167,10 +167,26 @@ The route **repacks** this into **`FormData`** for `query-form`. **Do not** hand
 
 **File:** `src/app/ar/[projectId]/page.tsx`
 
-- Loads **project** → **`map_code`**.
+- Loads **project** → **`map_code`**, placements, asset URLs from this app’s APIs.
 - **`getUserMedia`** with `facingMode: ideal "environment"` (rear camera on phones).
 - On **Localize**, grabs one video frame → downscale → JPEG → **`/api/localize`**.
-- No `@multisetai/vps`, no WebXR **required** for this flow — avoids immersive-browser GPU crashes on many Android devices.
+- After a **`poseFound`** result, **`ArPlacementOverlay`** (`src/components/ArPlacementOverlay.tsx`) draws placement GLBs in **map coordinates** using a Three.js camera at the localized **position/quaternion**. The canvas is **transparent** over the live video preview.
+- This is intentionally a **single-frame snapshot pose**: rotating the physical phone does **not** update the overlay until you **Localize** again — there is no continuous SLAM in REST-only mode. True “sticky” AR needs WebXR/ARKit style tracking plus repeated queries or fusion.
+
+---
+
+## Editor: Multiset map mesh and CORS
+
+**Symptom:** Opening the editor failed to load `TexturedMesh.glb` / `THREE.WebGLRenderer: Context Lost` after the browser logged **CORS** errors for `prod-multiset.s3-accelerate.amazonaws.com`.
+
+**Cause:** The editor receives a **short-lived presigned S3 URL** from Multiset (`/api/maps/.../download-mesh-url`). The bucket does not send **`Access-Control-Allow-Origin`** for arbitrary web origins (e.g. Netlify), so **`useGLTF` / `fetch` from the browser is blocked**.
+
+**Fix:** Load the mesh via a **same-origin proxy** instead of the naked S3 URL:
+
+- **`GET /api/maps/[mapCode]/mesh`** — Next.js downloads the blob using the fresh presigned URL **on the server** and returns **`model/gltf-binary`** to the browser.
+- The editor passes `apiUrl(\`/api/maps/${mapCode}/mesh\`)` into `EditorCanvas`.
+
+**Files:** `src/app/api/maps/[mapCode]/mesh/route.ts`, `src/app/editor/[projectId]/page.tsx`
 
 ---
 
@@ -208,3 +224,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 |------|--------|
 | 2026-05-07 | AR page switched from `@multisetai/vps` WebXR to **REST** + webcam; added `webcamCapture.ts` and this document. |
 | 2026-05-07 | JSON body path for `/api/localize`: `isRightHanded` default changed to **`true`** (omit field to match browser defaults). |
+| 2026-05-09 | **`GET .../mesh`**: proxy Multiset map GLB for editor (**CORS**). **AR overlay:** `ArPlacementOverlay` shows placements after REST localize (**snapshot**, not persistent AR). |
