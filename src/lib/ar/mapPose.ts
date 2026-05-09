@@ -65,3 +65,19 @@ export function buildMapCameraMatrix(loc: LocalizeResponse, mode: ArAlignMode): 
 
   return m;
 }
+
+/**
+ * Solve the transform that places authored map-space content into the active
+ * runtime tracking world.
+ *
+ * T_world_camera comes from WebXR at the exact captured frame.
+ * T_map_camera comes from Multiset REST localization for that same frame.
+ */
+export function solveWorldMapMatrix(
+  worldCameraMatrix: THREE.Matrix4,
+  localization: LocalizeResponse,
+  mode: ArAlignMode
+): THREE.Matrix4 {
+  const mapCameraMatrix = buildMapCameraMatrix(localization, mode);
+  return new THREE.Matrix4().multiplyMatrices(worldCameraMatrix, mapCameraMatrix.clone().invert());
+}

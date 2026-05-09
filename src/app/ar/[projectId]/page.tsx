@@ -1,23 +1,15 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { PlacementWithAsset } from "@/components/EditorCanvas";
 import { apiFetch } from "@/lib/api";
-import {
-  MAX_QUERY_IMAGE_DIMENSION,
-  captureVideoFrameForQuery,
-  startRearCamera,
-  stopMediaStream,
-} from "@/lib/ar/webcamCapture";
+import { captureFrameForLocalization } from "@/lib/ar/xrCapture";
+import { solveWorldMapMatrix, type ArAlignMode } from "@/lib/ar/mapPose";
 import type { AssetRow, LocalizeResponse, PlacementRow, ProjectRow } from "@/lib/types";
-
-const ArPlacementOverlay = dynamic(
-  () => import("@/components/ArPlacementOverlay").then((m) => ({ default: m.ArPlacementOverlay })),
-  { ssr: false }
-);
 
 function placementToView(p: PlacementRow, assets: Map<string, AssetRow>): PlacementWithAsset | null {
   const a = assets.get(p.asset_id);
@@ -25,34 +17,53 @@ function placementToView(p: PlacementRow, assets: Map<string, AssetRow>): Placem
   return { ...p, public_url: a.public_url };
 }
 
-function cameraVerticalFov(): number {
-  const raw = process.env.NEXT_PUBLIC_CAMERA_VERTICAL_FOV?.trim();
-  const n = raw ? Number(raw) : NaN;
-  if (Number.isFinite(n) && n > 10 && n < 170) return n;
-  return 60;
-}
-
 function queryIsRightHanded(): boolean {
   return process.env.NEXT_PUBLIC_VPS_IS_RIGHT_HANDED !== "false";
 }
 
+function localizePoseAlignment(): ArAlignMode {
+  const raw = process.env.NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE?.trim();
+  if (raw === "direct" || raw === "unity" || raw === "lhsReflection" || raw === "invMapCam") return raw;
+  return "direct";
+}
+
+function disposeObject(root: THREE.Object3D) {
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.geometry?.dispose();
+    const mat = mesh.material;
+    if (Array.isArray(mat)) mat.forEach((m) => m.dispose?.());
+    else mat?.dispose?.();
+  });
+}
+
+const assetCache = new Map<string, THREE.Object3D>();
+
 export default function ArPage() {
   const params = useParams();
   const projectId = String(params.projectId ?? "");
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const canvasHostRef = useRef<HTMLDivElement>(null);
 
   const [status, setStatus] = useState<string>("Loading project…");
   const [confidence, setConfidence] = useState<number | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [debugLines, setDebugLines] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [sessionActive, setSessionActive] = useState(false);
   const [mapCode, setMapCode] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<LocalizeResponse | null>(null);
-  const [queryFrame, setQueryFrame] = useState<{ h: number; fy: number } | null>(null);
   const [placements, setPlacements] = useState<PlacementWithAsset[]>([]);
 
-  const streamRef = useRef<MediaStream | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const mapRootRef = useRef<THREE.Group | null>(null);
+  const placedRootRef = useRef<THREE.Group | null>(null);
+  const xrSessionRef = useRef<XRSession | null>(null);
+  const currentMapCodeRef = useRef<string | null>(null);
+  const placementsRef = useRef<PlacementWithAsset[]>([]);
 
   const pushDebug = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString();
@@ -69,6 +80,7 @@ export default function ArPage() {
         const proj = (await pr.json()) as ProjectRow;
         if (cancelled) return;
         setMapCode(proj.map_code);
+        currentMapCodeRef.current = proj.map_code;
 
         const plRes = await apiFetch(`/api/projects/${projectId}/placements`);
         if (!plRes.ok) throw new Error(await plRes.text());
@@ -84,9 +96,12 @@ export default function ArPage() {
           const v = placementToView(row, assetMap);
           if (v) view.push(v);
         }
-        if (!cancelled) setPlacements(view);
+        if (!cancelled) {
+          setPlacements(view);
+          placementsRef.current = view;
+        }
 
-        setStatus(proj.map_code ? "Allow camera, then tap Localize." : "Project has no map code.");
+        setStatus(proj.map_code ? "Start AR, then tap Localize." : "Project has no map code.");
       } catch (e) {
         if (!cancelled) {
           setStatus(e instanceof Error ? e.message : "Failed to load project");
@@ -99,69 +114,203 @@ export default function ArPage() {
   }, [projectId]);
 
   useEffect(() => {
+    const host = canvasHostRef.current;
+    if (!host || rendererRef.current) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.style.display = "block";
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    host.appendChild(canvas);
+
+    const scene = new THREE.Scene();
+    sceneRef.current = scene;
+
+    const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 8000);
+    cameraRef.current = camera;
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      alpha: true,
+      antialias: false,
+      powerPreference: "low-power",
+      stencil: false,
+    });
+    renderer.xr.enabled = true;
+    renderer.setClearColor(0x000000, 0);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    rendererRef.current = renderer;
+
+    const mapRoot = new THREE.Group();
+    mapRoot.name = "mapRoot";
+    mapRoot.visible = false;
+    mapRootRef.current = mapRoot;
+    scene.add(mapRoot);
+
+    const placedRoot = new THREE.Group();
+    placedRoot.name = "placedObjectsRoot";
+    placedRootRef.current = placedRoot;
+    mapRoot.add(placedRoot);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.75));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+    dir.position.set(3, 8, 4);
+    scene.add(dir);
+
+    const resize = () => {
+      const w = Math.max(1, host.clientWidth || window.innerWidth);
+      const h = Math.max(1, host.clientHeight || window.innerHeight);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    };
+    const ro = new ResizeObserver(resize);
+    ro.observe(host);
+    resize();
+
+    renderer.setAnimationLoop(() => {
+      renderer.render(scene, camera);
+    });
+
     return () => {
-      stopMediaStream(streamRef.current);
-      streamRef.current = null;
+      ro.disconnect();
+      renderer.setAnimationLoop(null);
+      xrSessionRef.current?.end().catch(() => {});
+      xrSessionRef.current = null;
+      disposeObject(mapRoot);
+      renderer.dispose();
+      rendererRef.current = null;
+      sceneRef.current = null;
+      cameraRef.current = null;
+      mapRootRef.current = null;
+      placedRootRef.current = null;
+      if (canvas.parentElement === host) host.removeChild(canvas);
     };
   }, []);
 
-  async function ensureCamera(): Promise<boolean> {
-    const video = videoRef.current;
-    if (!video) return false;
-    if (streamRef.current) return true;
+  const loadPlacementsIntoMapRoot = useCallback(async () => {
+    const root = placedRootRef.current;
+    if (!root) return;
+    while (root.children.length) {
+      const child = root.children[0];
+      root.remove(child);
+      disposeObject(child);
+    }
+
+    const loader = new GLTFLoader();
+    for (const p of placementsRef.current) {
+      let proto = assetCache.get(p.public_url);
+      if (!proto) {
+        const gltf = await loader.loadAsync(p.public_url);
+        proto = gltf.scene;
+        assetCache.set(p.public_url, proto);
+      }
+      const obj = proto.clone(true);
+      const g = new THREE.Group();
+      g.name = p.name;
+      g.position.set(p.pos_x, p.pos_y, p.pos_z);
+      g.quaternion.set(p.rot_x, p.rot_y, p.rot_z, p.rot_w);
+      g.scale.set(p.scale_x, p.scale_y, p.scale_z);
+      g.add(obj);
+      root.add(g);
+    }
+    pushDebug(`Loaded ${root.children.length} placement(s) under mapRoot.`);
+  }, [pushDebug]);
+
+  const startAr = useCallback(async () => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    const xr = navigator.xr;
+    if (!xr) {
+      setStatus("WebXR is not available in this browser.");
+      return;
+    }
+    if (xrSessionRef.current) return;
+
     try {
-      const stream = await startRearCamera(video);
-      streamRef.current = stream;
-      pushDebug("Camera started (environment-facing if available).");
-      return true;
+      const supported = await xr.isSessionSupported("immersive-ar");
+      if (!supported) {
+        setStatus("Immersive AR is not supported on this device/browser.");
+        return;
+      }
+
+      renderer.xr.setReferenceSpaceType("local");
+      const sessionInit: XRSessionInit & { domOverlay?: { root: Element } } = {
+        requiredFeatures: ["camera-access"],
+        optionalFeatures: ["local-floor"],
+      };
+      if (rootRef.current) {
+        sessionInit.optionalFeatures = [...(sessionInit.optionalFeatures ?? []), "dom-overlay"];
+        sessionInit.domOverlay = { root: rootRef.current };
+      }
+      const session = await xr.requestSession("immersive-ar", sessionInit);
+
+      session.addEventListener("end", () => {
+        xrSessionRef.current = null;
+        setSessionActive(false);
+        setStatus("AR session ended.");
+        if (mapRootRef.current) mapRootRef.current.visible = false;
+      });
+      session.addEventListener("select", () => {
+        void localize();
+      });
+
+      await renderer.xr.setSession(session);
+      xrSessionRef.current = session;
+      setSessionActive(true);
+      setStatus("AR active — tap Localize. Screen tap also localizes.");
+      pushDebug("WebXR session started (REST localization is still server/API based).");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Camera permission failed";
       setStatus(msg);
       pushDebug(msg);
-      return false;
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pushDebug]);
 
-  async function localize() {
+  const localize = useCallback(async () => {
+    const renderer = rendererRef.current;
+    const session = xrSessionRef.current;
+    const mapCode = currentMapCodeRef.current;
     if (!mapCode || busy) return;
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) {
-      setStatus("Page not ready.");
+    if (!renderer || !session) {
+      setStatus("Start AR first.");
       return;
     }
+
+    const refSpace = renderer.xr.getReferenceSpace();
+    if (!refSpace) {
+      setStatus("WebXR reference space not ready.");
+      return;
+    }
+
     setBusy(true);
     setConfidence(null);
     setLastResult(null);
-    setQueryFrame(null);
     try {
-      const ok = await ensureCamera();
-      if (!ok) return;
-
-      const fov = cameraVerticalFov();
-      const frame = await captureVideoFrameForQuery(video, canvas, fov, MAX_QUERY_IMAGE_DIMENSION);
-      if (!frame) {
-        setStatus("Could not read a video frame (wait for preview, then retry).");
-        pushDebug(`Frame capture failed (video ${video.videoWidth}x${video.videoHeight}).`);
+      const capture = await captureFrameForLocalization(renderer, session, refSpace, 1280);
+      if (!capture) {
+        setStatus("Could not capture XR camera frame. Check camera-access support.");
+        pushDebug("XR capture failed: no camera texture or viewer pose.");
         return;
       }
 
       pushDebug(
-        `Query image ${frame.width}x${frame.height} JPEG ~${Math.round(frame.blob.size / 1024)}KB, ` +
-          `intrinsics fx=${frame.intrinsics.fx.toFixed(1)} fy=${frame.intrinsics.fy.toFixed(1)} ` +
-          `cx=${frame.intrinsics.px.toFixed(1)} cy=${frame.intrinsics.py.toFixed(1)} (vFOV≈${fov}° est.)`
+        `REST query image ${capture.intrinsics.width}x${capture.intrinsics.height} ` +
+          `~${Math.round(capture.blob.size / 1024)}KB; ` +
+          `fx=${capture.intrinsics.fx.toFixed(1)} fy=${capture.intrinsics.fy.toFixed(1)}`
       );
 
       const fd = new FormData();
       fd.append("mapCode", mapCode);
-      fd.append("fx", String(frame.intrinsics.fx));
-      fd.append("fy", String(frame.intrinsics.fy));
-      fd.append("px", String(frame.intrinsics.px));
-      fd.append("py", String(frame.intrinsics.py));
-      fd.append("width", String(frame.width));
-      fd.append("height", String(frame.height));
+      fd.append("fx", String(capture.intrinsics.fx));
+      fd.append("fy", String(capture.intrinsics.fy));
+      fd.append("px", String(capture.intrinsics.px));
+      fd.append("py", String(capture.intrinsics.py));
+      fd.append("width", String(capture.intrinsics.width));
+      fd.append("height", String(capture.intrinsics.height));
       fd.append("isRightHanded", String(queryIsRightHanded()));
-      fd.append("queryImage", frame.blob, "query.jpg");
+      fd.append("queryImage", capture.blob, "xr-query.jpg");
 
       const res = await apiFetch("/api/localize", { method: "POST", body: fd });
       const text = await res.text();
@@ -181,9 +330,17 @@ export default function ArPage() {
       const c = parsed.confidence ?? null;
       setConfidence(c);
       if (parsed.poseFound) {
-        setQueryFrame({ h: frame.height, fy: frame.intrinsics.fy });
-        setStatus(`Localized — conf ${(c ?? 0).toFixed(3)} (snapshot overlay)`);
-        pushDebug(`poseFound mapCodes=${JSON.stringify(parsed.mapCodes)}`);
+        await loadPlacementsIntoMapRoot();
+        const align = localizePoseAlignment();
+        const worldMap = solveWorldMapMatrix(capture.viewerMatrix, parsed, align);
+        const mapRoot = mapRootRef.current;
+        if (mapRoot) {
+          worldMap.decompose(mapRoot.position, mapRoot.quaternion, mapRoot.scale);
+          mapRoot.visible = true;
+          mapRoot.updateMatrixWorld(true);
+        }
+        setStatus(`Localized — conf ${(c ?? 0).toFixed(3)} (mapRoot aligned)`);
+        pushDebug(`poseFound=${parsed.poseFound} align=${align} mapCodes=${JSON.stringify(parsed.mapCodes)}`);
       } else {
         setStatus("No pose for this frame — try aim, lighting, or another angle.");
         pushDebug("poseFound=false");
@@ -191,15 +348,10 @@ export default function ArPage() {
     } finally {
       setBusy(false);
     }
-  }
-
-  const overlayPayload =
-    lastResult?.poseFound && lastResult.position && lastResult.rotation && queryFrame && placements.length > 0
-      ? { result: lastResult, qf: queryFrame }
-      : null;
+  }, [busy, loadPlacementsIntoMapRoot, pushDebug]);
 
   return (
-    <div className="relative min-h-screen bg-zinc-950">
+    <div ref={rootRef} className="relative min-h-screen bg-zinc-950">
       <div className="relative z-30 border-b border-zinc-800/80 bg-zinc-950/90 px-3 py-2 backdrop-blur-sm">
         <div className="pointer-events-auto flex flex-wrap items-center gap-3">
           <Link href={`/editor/${projectId}`} className="text-sm text-violet-400 hover:underline">
@@ -212,7 +364,7 @@ export default function ArPage() {
           >
             {showDebug ? "Hide log" : "Show log"}
           </button>
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">REST map query</span>
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">Vanilla WebXR + REST map query</span>
         </div>
         {showDebug ? (
           <div className="pointer-events-auto mt-2 w-full max-w-2xl rounded-lg border border-zinc-700/80 bg-black/70 p-3 text-xs text-zinc-200">
@@ -234,57 +386,44 @@ export default function ArPage() {
         ) : null}
       </div>
 
-      <div className="relative mx-auto flex max-w-lg flex-col gap-3 p-3">
-        <p className="text-sm text-zinc-400">
-          After <strong className="text-zinc-200">Localized</strong>, placed GLBs render as a transparent <strong className="text-zinc-200">snapshot</strong> from your last pose (same map coordinates as the editor). Move the phone and the overlay will drift until you localize again — there is no continuous tracking in REST-only mode.
-        </p>
-        {placements.length === 0 ? (
-          <p className="text-sm text-amber-200/90">No placements in this project — add objects in the editor first.</p>
-        ) : null}
-        <div className="relative aspect-[3/4] w-full overflow-hidden rounded-xl border border-zinc-700 bg-black">
-          <video
-            ref={videoRef}
-            className="h-full w-full object-cover"
-            playsInline
-            muted
-            autoPlay
-            controls={false}
-          />
-          <canvas ref={canvasRef} className="hidden" />
-          {overlayPayload ? (
-            <ArPlacementOverlay
-              localizeResult={overlayPayload.result}
-              placements={placements}
-              queryHeight={overlayPayload.qf.h}
-              fy={overlayPayload.qf.fy}
-            />
-          ) : null}
+      <div className="relative min-h-[calc(100vh-56px)]">
+        <div ref={canvasHostRef} className="absolute inset-0 bg-black" />
+        <div className="pointer-events-none absolute inset-0 z-20 flex flex-col p-3">
+          <div className="pointer-events-auto max-w-xl rounded-lg bg-black/65 p-3 text-sm text-zinc-200 backdrop-blur">
+            <p>
+              Multiset localization is still <strong>REST</strong>: WebXR only supplies the local tracking pose
+              needed to place <code>mapRoot</code> into browser world space.
+            </p>
+            {placements.length === 0 ? (
+              <p className="mt-2 text-amber-200/90">No placements in this project — add objects in the editor first.</p>
+            ) : null}
+          </div>
+          <div className="pointer-events-auto mt-auto flex flex-wrap items-center justify-center gap-2 pb-8">
+            <button
+              type="button"
+              onClick={() => void startAr()}
+              disabled={busy || sessionActive || !mapCode}
+              className="rounded-lg border border-zinc-600 bg-black/70 px-4 py-2 text-sm text-zinc-100 shadow hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {sessionActive ? "AR active" : "Start AR"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void localize()}
+              disabled={busy || !sessionActive || !mapCode}
+              className="rounded-lg bg-violet-600 px-6 py-2 text-sm font-medium text-white shadow hover:bg-violet-500 disabled:opacity-50"
+            >
+              {busy ? "Querying REST…" : "Localize + Align Map"}
+            </button>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="absolute bottom-3 left-3 right-3 z-30 flex flex-wrap items-center gap-2 rounded-lg bg-black/65 p-2 backdrop-blur">
           <span className="text-sm text-zinc-300">{status}</span>
           {confidence !== null ? (
             <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300">
               conf {confidence.toFixed(3)}
             </span>
           ) : null}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void ensureCamera()}
-            disabled={busy}
-            className="rounded-lg border border-zinc-600 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
-          >
-            Start camera
-          </button>
-          <button
-            type="button"
-            onClick={() => void localize()}
-            disabled={busy || !mapCode}
-            className="rounded-lg bg-violet-600 px-6 py-2 text-sm font-medium text-white shadow hover:bg-violet-500 disabled:opacity-50"
-          >
-            {busy ? "Querying…" : "Localize (capture frame)"}
-          </button>
         </div>
       </div>
     </div>

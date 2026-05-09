@@ -168,12 +168,17 @@ The route **repacks** this into **`FormData`** for `query-form`. **Do not** hand
 **File:** `src/app/ar/[projectId]/page.tsx`
 
 - Loads **project** → **`map_code`**, placements, asset URLs from this app’s APIs.
-- **`getUserMedia`** with `facingMode: ideal "environment"` (rear camera on phones).
-- On **Localize**, grabs one video frame → downscale → JPEG → **`/api/localize`**.
-- After a **`poseFound`** result, **`ArPlacementOverlay`** (`src/components/ArPlacementOverlay.tsx`) draws placement GLBs in **map coordinates** using a Three.js camera at the localized **position/quaternion** (`buildMapCameraMatrix` in `src/lib/ar/mapPose.ts`). The canvas is **transparent** over the live video preview.
-- **Implementation note:** `ArPlacementOverlay` uses **plain Three.js** (`WebGLRenderer` + `requestAnimationFrame`), not React Three Fiber. Multiset’s **`examples/vanilla`** flow is the same idea (no React wrappers); **Three is still typical for GLBs.** If content still visually “sticks” when you physically rotate the phone, that matches **snapshot REST** localize (below) unless you add **orientation**, **WebXR tracking**, or **multi-image** VPS.
+- Starts a minimal **vanilla WebXR** `immersive-ar` session. WebXR is used only for local tracking/rendering and camera texture access; **localization remains REST**.
+- On **Localize**, `src/lib/ar/xrCapture.ts` reads the WebXR camera texture, derives intrinsics from `XRView.projectionMatrix`, downscales the JPEG so max side ≤ **1280**, and sends it to **`/api/localize`**.
+- Multiset REST returns **`T_map_camera`** (`position` + `rotation` in map space). WebXR provides **`T_world_camera`** for the exact captured frame. We solve:
+
+  ```text
+  T_world_map = T_world_camera * inverse(T_map_camera)
+  ```
+
+- The Three.js scene has a persistent **`mapRoot`**. Editor placements are loaded under `mapRoot/placedObjectsRoot`, so after localization they are in the same authored map coordinate frame as the editor.
 - **Alignment:** `NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE` selects `direct` (default, same frame as raw API + editor mesh) vs `unity` / `invMapCam` / etc. if your map uses different handedness.
-- This is still a **single-frame snapshot**: rotating the physical phone does **not** update the overlay until you **Localize** again — there is no continuous SLAM in REST-only mode. True “sticky” AR needs WebXR/ARKit style tracking plus repeated queries or fusion.
+- Relocalizing recomputes `T_world_map` and corrects drift. This is the browser equivalent of what Unity/ARCore/ARKit would do: the host runtime supplies local tracking; Multiset REST supplies the global/map correction.
 
 ---
 
@@ -206,6 +211,7 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | `NEXT_PUBLIC_EDITOR_SHARED_KEY` | Sent as `x-editor-key` from the browser |
 | `NEXT_PUBLIC_CAMERA_VERTICAL_FOV` | Override default **60** (degrees) for estimated intrinsics |
 | `NEXT_PUBLIC_VPS_IS_RIGHT_HANDED` | Set `false` to send `isRightHanded=false` from the AR page |
+| `NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE` | Pose interpretation for `T_map_camera`: `direct` (default), `unity`, `lhsReflection`, `invMapCam` |
 
 ---
 
@@ -226,6 +232,7 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 |------|--------|
 | 2026-05-07 | AR page switched from `@multisetai/vps` WebXR to **REST** + webcam; added `webcamCapture.ts` and this document. |
 | 2026-05-07 | JSON body path for `/api/localize`: `isRightHanded` default changed to **`true`** (omit field to match browser defaults). |
-| 2026-05-09 | **`GET .../mesh`**: proxy Multiset map GLB for editor (**CORS**). **AR overlay:** `ArPlacementOverlay` shows placements after REST localize (**snapshot**, not persistent AR). |
+| 2026-05-09 | **`GET .../mesh`**: proxy Multiset map GLB for editor (**CORS**). Earlier interim AR overlay showed placements after REST localize as a snapshot. |
 | 2026-05-09 | **AR overlay pose bugfix:** avoid R3F `camera` prop reset; apply localized camera in **`useFrame`**; optional `NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE`. |
 | 2026-05-09 | **AR overlay:** rewritten as **plain Three.js** (no R3F) for Multiset-style “vanilla” rendering stack. |
+| 2026-05-09 | **AR runtime:** replaced webcam/snapshot overlay with **vanilla WebXR + REST**. WebXR supplies `T_world_camera`; Multiset REST supplies `T_map_camera`; app solves `T_world_map` and parents editor placements under `mapRoot`. |
