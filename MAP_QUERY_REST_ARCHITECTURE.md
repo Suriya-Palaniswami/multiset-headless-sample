@@ -169,6 +169,7 @@ The route **repacks** this into **`FormData`** for `query-form`. **Do not** hand
 
 - Loads **project** → **`map_code`**, placements, asset URLs from this app’s APIs.
 - Starts a minimal **vanilla WebXR** `immersive-ar` session. WebXR is used only for local tracking/rendering and camera texture access; **localization remains REST**.
+- Safe mode defaults: **no `dom-overlay`** in `requestSession` and renderer pixel ratio capped to **≤ 1**. Set `NEXT_PUBLIC_AR_DOM_OVERLAY=true` only when debugging overlay UI inside XR; set `NEXT_PUBLIC_AR_PIXEL_RATIO` to tune framebuffer pressure.
 - On **Localize**, `src/lib/ar/xrCapture.ts` reads the WebXR camera texture, derives intrinsics from `XRView.projectionMatrix`, downscales the JPEG so max side ≤ **1280**, and sends it to **`/api/localize`**.
 - Multiset REST returns **`T_map_camera`** (`position` + `rotation` in map space). WebXR provides **`T_world_camera`** for the exact captured frame. We solve:
 
@@ -252,6 +253,8 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | `NEXT_PUBLIC_CAMERA_VERTICAL_FOV` | Override default **60** (degrees) for estimated intrinsics |
 | `NEXT_PUBLIC_VPS_IS_RIGHT_HANDED` | Set `false` to send `isRightHanded=false` from the AR page |
 | `NEXT_PUBLIC_AR_LOCALIZE_POSE_MODE` | Pose interpretation for `T_map_camera`: `direct` (default), `unity`, `lhsReflection`, `invMapCam` |
+| `NEXT_PUBLIC_AR_PIXEL_RATIO` | Optional WebXR renderer pixel ratio cap; default ≤ **1** for mobile stability |
+| `NEXT_PUBLIC_AR_DOM_OVERLAY` | Set `true` to request WebXR `dom-overlay`; default disabled to avoid Android compositor crashes |
 
 ---
 
@@ -278,3 +281,4 @@ Multiset also exposes **`/vps/map/multi-image-query`**: **4–6** images per req
 | 2026-05-09 | **AR runtime:** replaced webcam/snapshot overlay with **vanilla WebXR + REST**. WebXR supplies `T_world_camera`; Multiset REST supplies `T_map_camera`; app solves `T_world_map` and parents editor placements under `mapRoot`. |
 | 2026-05-09 | **AR diagnostics:** added Supabase-backed `ar_logs` table and `/api/ar-logs` route; AR page sends WebXR/capture/localize/GL context breadcrumbs. |
 | 2026-05-09 | **AR diagnostics:** `/api/ar-logs` also writes downloadable `.jsonl` text files to Supabase Storage bucket `ar-logs`; `GET ...&format=jsonl` returns a downloadable log file. |
+| 2026-05-09 | **AR stability:** safe mode disables `dom-overlay` by default and caps renderer pixel ratio to ≤ 1; screen tap (`select`) still triggers localization in AR. |

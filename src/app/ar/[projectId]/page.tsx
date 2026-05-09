@@ -27,6 +27,16 @@ function localizePoseAlignment(): ArAlignMode {
   return "direct";
 }
 
+function arPixelRatio(): number {
+  const raw = Number(process.env.NEXT_PUBLIC_AR_PIXEL_RATIO ?? "");
+  if (Number.isFinite(raw) && raw > 0) return Math.min(raw, window.devicePixelRatio || 1);
+  return Math.min(1, window.devicePixelRatio || 1);
+}
+
+function arUseDomOverlay(): boolean {
+  return process.env.NEXT_PUBLIC_AR_DOM_OVERLAY === "true";
+}
+
 function disposeObject(root: THREE.Object3D) {
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
@@ -217,11 +227,12 @@ export default function ArPage() {
     });
     renderer.xr.enabled = true;
     renderer.setClearColor(0x000000, 0);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    const pixelRatio = arPixelRatio();
+    renderer.setPixelRatio(pixelRatio);
     rendererRef.current = renderer;
     arLog("renderer_initialized", {
       dpr: window.devicePixelRatio || 1,
-      pixelRatio: Math.min(window.devicePixelRatio || 1, 1.5),
+      pixelRatio,
       width: host.clientWidth,
       height: host.clientHeight,
     });
@@ -342,7 +353,7 @@ export default function ArPage() {
         requiredFeatures: ["camera-access"],
         optionalFeatures: ["local-floor"],
       };
-      if (rootRef.current) {
+      if (arUseDomOverlay() && rootRef.current) {
         sessionInit.optionalFeatures = [...(sessionInit.optionalFeatures ?? []), "dom-overlay"];
         sessionInit.domOverlay = { root: rootRef.current };
       }
@@ -365,9 +376,10 @@ export default function ArPage() {
       await renderer.xr.setSession(session);
       xrSessionRef.current = session;
       setSessionActive(true);
-      setStatus("AR active — tap Localize. Screen tap also localizes.");
+      const overlay = arUseDomOverlay();
+      setStatus(overlay ? "AR active — tap Localize." : "AR active — tap screen to localize (overlay disabled).");
       pushDebug("WebXR session started (REST localization is still server/API based).");
-      arLog("webxr_session_started", { renderState: Boolean(session.renderState) });
+      arLog("webxr_session_started", { renderState: Boolean(session.renderState), domOverlay: overlay });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Camera permission failed";
       setStatus(msg);
