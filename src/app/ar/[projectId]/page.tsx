@@ -83,6 +83,9 @@ export default function ArPage() {
   const mapRootRef = useRef<THREE.Group | null>(null);
   const placedRootRef = useRef<THREE.Group | null>(null);
   const xrSessionRef = useRef<XRSession | null>(null);
+  const xrReferenceSpaceRef = useRef<XRReferenceSpace | null>(null);
+  const xrFrameIdRef = useRef<number | null>(null);
+  const xrFirstFrameLoggedRef = useRef(false);
   const currentMapCodeRef = useRef<string | null>(null);
   const placementsRef = useRef<PlacementWithAsset[]>([]);
   const logSeqRef = useRef(0);
@@ -239,8 +242,6 @@ export default function ArPage() {
       powerPreference: "low-power",
       stencil: false,
     });
-    // WebXR session/tracking stays explicit via navigator.xr; Three only owns scene rendering.
-    renderer.xr.enabled = true;
     renderer.setClearColor(0x000000, 0);
     const pixelRatio = arPixelRatio();
     renderer.setPixelRatio(pixelRatio);
@@ -279,15 +280,15 @@ export default function ArPage() {
     ro.observe(host);
     resize();
 
-    renderer.setAnimationLoop(() => {
-      renderer.render(scene, camera);
-    });
-
     return () => {
       ro.disconnect();
-      renderer.setAnimationLoop(null);
+      const session = xrSessionRef.current;
+      const frameId = xrFrameIdRef.current;
+      if (session && frameId !== null) session.cancelAnimationFrame(frameId);
       xrSessionRef.current?.end().catch(() => {});
       xrSessionRef.current = null;
+      xrReferenceSpaceRef.current = null;
+      xrFrameIdRef.current = null;
       disposeObject(mapRoot);
       renderer.dispose();
       rendererRef.current = null;
@@ -339,6 +340,51 @@ export default function ArPage() {
     arLog("placements_load_success", { loaded: root.children.length, requested: placementsRef.current.length });
   }, [arLog, pushDebug]);
 
+  const startXrRenderLoop = useCallback(
+    (session: XRSession, refSpace: XRReferenceSpace, baseLayer: XRWebGLLayer) => {
+      const renderer = rendererRef.current;
+      const scene = sceneRef.current;
+      const camera = cameraRef.current;
+      if (!renderer || !scene || !camera) return;
+
+      const gl = renderer.getContext();
+      camera.matrixAutoUpdate = false;
+
+      const onFrame: XRFrameRequestCallback = (_time, frame) => {
+        xrFrameIdRef.current = session.requestAnimationFrame(onFrame);
+        const pose = frame.getViewerPose(refSpace);
+        if (!pose) return;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
+        renderer.setScissorTest(true);
+
+        for (const view of pose.views) {
+          const viewport = baseLayer.getViewport(view);
+          if (!viewport) continue;
+
+          renderer.setViewport(viewport.x, viewport.y, viewport.width, viewport.height);
+          renderer.setScissor(viewport.x, viewport.y, viewport.width, viewport.height);
+          camera.projectionMatrix.fromArray(view.projectionMatrix);
+          camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+          camera.matrix.fromArray(view.transform.matrix);
+          camera.matrixWorld.copy(camera.matrix);
+          camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+          renderer.render(scene, camera);
+        }
+
+        renderer.setScissorTest(false);
+        if (!xrFirstFrameLoggedRef.current) {
+          xrFirstFrameLoggedRef.current = true;
+          arLog("xr_first_frame", { views: pose.views.length }, "debug");
+        }
+      };
+
+      xrFirstFrameLoggedRef.current = false;
+      xrFrameIdRef.current = session.requestAnimationFrame(onFrame);
+    },
+    [arLog]
+  );
+
   const startAr = useCallback(async () => {
     const renderer = rendererRef.current;
     if (!renderer) return;
@@ -363,9 +409,7 @@ export default function ArPage() {
         return;
       }
 
-      renderer.xr.setReferenceSpaceType("local");
       const framebufferScale = arFramebufferScale();
-      renderer.xr.setFramebufferScaleFactor(framebufferScale);
       const sessionInit: XRSessionInit & { domOverlay?: { root: Element } } = {
         requiredFeatures: ["camera-access"],
         optionalFeatures: ["local-floor"],
@@ -380,9 +424,23 @@ export default function ArPage() {
         framebufferScale,
       });
       const session = await xr.requestSession("immersive-ar", sessionInit);
+      const gl = renderer.getContext();
+      await (gl as WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }).makeXRCompatible?.();
+      const baseLayer = new XRWebGLLayer(session, gl, {
+        antialias: false,
+        framebufferScaleFactor: framebufferScale,
+        ignoreDepthValues: true,
+      });
+      session.updateRenderState({ baseLayer });
+      const refSpace = await session.requestReferenceSpace("local");
 
       session.addEventListener("end", () => {
+        if (xrFrameIdRef.current !== null) {
+          session.cancelAnimationFrame(xrFrameIdRef.current);
+          xrFrameIdRef.current = null;
+        }
         xrSessionRef.current = null;
+        xrReferenceSpaceRef.current = null;
         setSessionActive(false);
         setStatus("AR session ended.");
         if (mapRootRef.current) mapRootRef.current.visible = false;
@@ -391,13 +449,18 @@ export default function ArPage() {
         void localize();
       });
 
-      await renderer.xr.setSession(session);
       xrSessionRef.current = session;
+      xrReferenceSpaceRef.current = refSpace;
+      startXrRenderLoop(session, refSpace, baseLayer);
       setSessionActive(true);
       const overlay = arUseDomOverlay();
       setStatus(overlay ? "AR active — tap Localize." : "AR active — tap screen to localize (overlay disabled).");
       pushDebug("WebXR session started (REST localization is still server/API based).");
-      arLog("webxr_session_started", { renderState: Boolean(session.renderState), domOverlay: overlay });
+      arLog("webxr_session_started", {
+        baseLayer: Boolean(session.renderState.baseLayer),
+        domOverlay: overlay,
+        framebufferScale,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Camera permission failed";
       setStatus(msg);
@@ -405,7 +468,7 @@ export default function ArPage() {
       arLog("start_ar_error", { error: msg }, "error");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [arLog, pushDebug]);
+  }, [arLog, pushDebug, startXrRenderLoop]);
 
   const localize = useCallback(async () => {
     const renderer = rendererRef.current;
@@ -417,7 +480,7 @@ export default function ArPage() {
       return;
     }
 
-    const refSpace = renderer.xr.getReferenceSpace();
+    const refSpace = xrReferenceSpaceRef.current;
     if (!refSpace) {
       setStatus("WebXR reference space not ready.");
       return;
