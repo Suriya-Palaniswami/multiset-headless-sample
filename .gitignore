@@ -27,8 +27,14 @@ yarn-error.log*
 /logs/
 *.jsonl
 
-# local env files
-.env*.local
+# env — never commit secrets; .env.example is the template only
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+!.env.example
 
 # vercel
 .vercel

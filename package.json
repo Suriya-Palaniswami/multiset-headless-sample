@@ -1,7 +1,8 @@
 {
   "name": "multiset-headless-sample",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "license": "MIT",
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0 --port 3000",
     "dev:localhost": "next dev --hostname 127.0.0.1 --port 3000",

@@ -8,10 +8,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
-  const expected = process.env.NEXT_PUBLIC_EDITOR_PASSWORD ?? "multiset-demo";
+  const expected = process.env.NEXT_PUBLIC_EDITOR_PASSWORD?.trim();
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!expected) {
+      setError("Set NEXT_PUBLIC_EDITOR_PASSWORD in your environment");
+      return;
+    }
     if (password === expected) {
       localStorage.setItem("editorUnlocked", "true");
       router.replace("/maps");

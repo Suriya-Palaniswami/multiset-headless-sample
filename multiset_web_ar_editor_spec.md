@@ -280,20 +280,22 @@ This is still simple but prevents totally open public access.
 
 ## 8) Required environment variables
 
+See `.env.example` for the full list. Example (use your own values):
+
 ## Frontend
 ```env
-NEXT_PUBLIC_EDITOR_PASSWORD=multiset-demo
-NEXT_PUBLIC_API_BASE_URL=http://localhost:3000
+NEXT_PUBLIC_EDITOR_PASSWORD=
+NEXT_PUBLIC_API_BASE_URL=
+NEXT_PUBLIC_EDITOR_SHARED_KEY=
 ```
 
 ## Backend
 ```env
-PORT=3000
-EDITOR_SHARED_KEY=super-simple-shared-key
-MULTISET_CLIENT_ID=your_multiset_client_id
-MULTISET_CLIENT_SECRET=your_multiset_client_secret
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+EDITOR_SHARED_KEY=
+MULTISET_CLIENT_ID=
+MULTISET_CLIENT_SECRET=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
 SUPABASE_GLBS_BUCKET=glb-assets
 ```
 
